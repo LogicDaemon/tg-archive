@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import shutil
-import tempfile
 import threading
 import time
 from io import BytesIO
@@ -66,18 +65,26 @@ class Sync(aobject):
     config: ConfigFileType
     db: DB
     client: TelegramClient
+    root: str
+    media_dir: str
+    media_tmp_dir: str
 
-    def __init__(self, config: ConfigFileType, session_file: str,
-                 db: DB) -> None:
+    def __init__(self, *, config: ConfigFileType, dl_root: str,
+                 session_file: str, db: DB) -> None:
         self.config = config
-        self.db = db
+        self.root = dl_root
         self.session_file = session_file
+        self.db = db
 
-        if not os.path.exists(self.config["media_dir"]):
-            os.mkdir(self.config["media_dir"])
+        self.media_dir = media_dir = os.path.join(dl_root,
+                                                  self.config["media_dir"])
+        os.makedirs(media_dir, exist_ok=True)
+        self.media_tmp_dir = media_tmp_dir = os.path.join(
+            dl_root, self.config["media_tmp_dir"])
+        os.makedirs(media_tmp_dir, exist_ok=True)
 
-    async def _init(self, config: ConfigFileType, session_file: str,
-                    db: DB) -> None:
+    async def _init(self, *, config: ConfigFileType, dl_root: str,
+                    session_file: str, db: DB) -> None:
         self.client = await self.new_client(session_file, config)
 
     async def sync(self, ids=None, from_id=None) -> None:
@@ -248,7 +255,7 @@ class Sync(aobject):
                 content=sticker if sticker else m.raw_text,
                 reply_to=m.reply_to_msg_id
                 if m.reply_to and m.reply_to.reply_to_msg_id else None,
-                user=self._get_user(m.sender),
+                user=await self._get_user(m.sender),
                 media=med)
 
     async def _fetch_messages(self,
@@ -272,7 +279,7 @@ class Sync(aobject):
             logging.info("flood waited: have to wait {} seconds".format(
                 e.seconds))
 
-    def _get_user(self, u) -> User:
+    async def _get_user(self, u) -> User:
         tags = []
         is_normal_user = isinstance(u, telethon.tl.types.User)
 
@@ -299,7 +306,7 @@ class Sync(aobject):
         avatar = None
         if self.config["download_avatars"]:
             try:
-                fname = self._download_avatar(u)
+                fname = await self._download_avatar(u)
                 avatar = fname
             except Exception as e:
                 logging.error("error downloading avatar: #{}: {}".format(
@@ -381,21 +388,20 @@ class Sync(aobject):
         # Download the media to the temp dir and copy it back as
         # there does not seem to be a way to get the canonical
         # filename before the download.
-        fpath = await self.client.download_media(
-            msg, file=tempfile.gettempdir())
+        fpath = await self.client.download_media(msg, file=self.media_tmp_dir)
         basename = os.path.basename(fpath)
 
         newname = f'{msg.id}.{self._get_file_ext(basename)}'
-        fmove(fpath, os.path.join(self.config['media_dir'], newname))
+        fmove(fpath, os.path.join(self.media_dir, newname))
 
         # If it's a photo, download the thumbnail.
         tname = None
         if isinstance(msg.media, telethon.tl.types.MessageMediaPhoto):
             tpath = await self.client.download_media(
-                msg, file=tempfile.gettempdir(), thumb=1)
+                msg, file=self.media_tmp_dir, thumb=1)
             tname = "thumb_{}.{}".format(
                 msg.id, self._get_file_ext(os.path.basename(tpath)))
-            fmove(tpath, os.path.join(self.config["media_dir"], tname))
+            fmove(tpath, os.path.join(self.media_dir, tname))
 
         return basename, newname, tname
 
@@ -407,9 +413,9 @@ class Sync(aobject):
 
         return ".file"
 
-    def _download_avatar(self, user) -> Optional[str]:
+    async def _download_avatar(self, user) -> Optional[str]:
         fname = "avatar_{}.jpg".format(user.id)
-        fpath = os.path.join(self.config["media_dir"], fname)
+        fpath = os.path.join(self.media_dir, fname)
 
         if os.path.exists(fpath):
             return fname
@@ -418,7 +424,7 @@ class Sync(aobject):
 
         # Download the file into a container, resize it, and then write to disk.
         b = BytesIO()
-        profile_photo = self.client.download_profile_photo(user, file=b)
+        profile_photo = await self.client.download_profile_photo(user, file=b)
         if profile_photo is None:
             logging.info("user has no avatar #{}".format(user.id))
             return None

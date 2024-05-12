@@ -17,6 +17,7 @@ download_media: True
 download_avatars: True
 avatar_size: [64, 64] # Width, Height.
 media_dir: "media"
+media_tmp_dir: "media/tmp"
 
 # The list of media/file mime types (in lowercase) to download.
 # eg: ["image/gif", "image/jpeg", "image/png", "video/mp4", "application/zip", "application/pdf"]

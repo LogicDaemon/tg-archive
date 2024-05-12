@@ -21,6 +21,7 @@ ConfigFileType = TypedDict(
         'avatar_size': list[int],
         'download_media': bool,
         'media_dir': str,
+        'media_tmp_dir': str,
         'media_mime_types': list[str],
         'proxy': dict,
         'fetch_batch_size': int,
@@ -49,6 +50,7 @@ _CONFIG_DEFAULTS: ConfigFileType = {
     "avatar_size": [64, 64],
     "download_media": True,
     "media_dir": "media",
+    "media_tmp_dir": "media/tmp",
     "media_mime_types": [],
     "proxy": {
         "enable": False,

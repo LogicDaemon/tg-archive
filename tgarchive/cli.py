@@ -23,14 +23,14 @@ def app_data_dir() -> str:
 
 
 def default_session_file() -> str:
-    default_filename = 'session.session'
+    default_filename = f'{program_name}.session'
     secret_data_dir = os.getenv('SecretDataDir') or app_data_dir()
 
     return os.path.join(secret_data_dir, default_filename)
 
 
 async def amain() -> None:
-    """Run the CLI."""
+    """ Run the CLI """
     p = argparse.ArgumentParser(
         description="A tool for exporting and archiving Telegram groups to webpages.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -152,13 +152,17 @@ async def amain() -> None:
 
         logging.info("created directory '%s'", args.path)
 
-        # make sure the files are writable
-        os.chmod(args.path, 0o755)
-        for root, dirs, files in os.walk(args.path):
-            for d in dirs:
-                os.chmod(os.path.join(root, d), 0o755)
-            for f in files:
-                os.chmod(os.path.join(root, f), 0o644)
+        # make sure the directories are writable
+        base_mode = os.stat(args.path).st_mode & 0o777
+        if base_mode & 0o700 != 0o700:
+            os.chmod(args.path, base_mode | 0o700)
+            for root, dirnames, filenames in os.walk(args.path):
+                for d in dirnames:
+                    if os.stat(d).st_mode & 0o700 != 0o700:
+                        os.chmod(d, 0o700 | base_mode)
+                for f in filenames:
+                    if os.stat(f).st_mode & 0o600 != 0o600:
+                        os.chmod(f, 0o600 | base_mode)
         return
 
     from .config import get_config
@@ -179,7 +183,11 @@ async def amain() -> None:
             "starting Telegram sync (batch_size=%s, limit=%s, wait=%s, mode=%s)",
             cfg["fetch_batch_size"], cfg["fetch_limit"], cfg["fetch_wait"],
             mode)
-        s = await Sync(cfg, args.session, DB(args.data))
+        s = await Sync(
+            config=cfg,
+            dl_root=args.path,
+            session_file=args.session,
+            db=DB(args.data))
         try:
             await s.sync(args.id, args.from_id)
         except KeyboardInterrupt:
