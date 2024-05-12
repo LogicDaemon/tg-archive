@@ -1,40 +1,88 @@
-from io import BytesIO
-from sys import exit
+from collections import deque, namedtuple
 import json
 import logging
 import os
-import tempfile
 import shutil
+import tempfile
+import threading
 import time
+from io import BytesIO
+from sys import exit
+from typing import AsyncGenerator, Deque, Optional, Union
 
-from PIL import Image
-from telethon import TelegramClient, errors, sync
+import telethon.hints
 import telethon.tl.types
+from PIL import Image
+from telethon import TelegramClient, errors
 
-from .db import User, Message, Media
+from .aobject import aobject
+from .config import ConfigFileType
+from .db import DB, Media, Message, User
+
+import atexit
+
+moving_thread: Optional[threading.Thread] = None
+move_event = threading.Event()
+move_files: Deque[tuple[str, str]] = deque()
+exit_signaled: bool = False
+
+DownloadMediaReturn = namedtuple("DownloadMediaReturn",
+                                 ["basename", "fname", "thumb"])
 
 
-class Sync:
+def moving_thread_fn() -> None:
+    while not exit_signaled:
+        while move_files:
+            src, dest = move_files.popleft()
+            shutil.move(src, dest)
+        move_event.clear()
+        move_event.wait()
+
+
+def finish_moving_thread() -> None:
+    global exit_signaled, moving_thread
+    exit_signaled = True
+    if moving_thread is not None:
+        move_event.set()
+        moving_thread.join()
+        moving_thread = None
+
+
+def fmove(src: Union[str, os.PathLike], dest: Union[str, os.PathLike]) -> None:
+    """ Move a file from src to dest """
+    global moving_thread
+    move_files.append((src, dest))
+    move_event.set()
+    if moving_thread is None:
+        moving_thread = threading.Thread(target=moving_thread_fn)
+        moving_thread.start()
+        atexit.register(finish_moving_thread)
+
+
+class Sync(aobject):
+    """ Sync iterates and receives messages from the Telegram group to the
+        local SQLite DB.
     """
-    Sync iterates and receives messages from the Telegram group to the
-    local SQLite DB.
-    """
-    config = {}
-    db = None
+    config: ConfigFileType
+    db: DB
+    client: TelegramClient
 
-    def __init__(self, config, session_file, db):
+    def __init__(self, config: ConfigFileType, session_file: str,
+                 db: DB) -> None:
         self.config = config
         self.db = db
-
-        self.client = self.new_client(session_file, config)
+        self.session_file = session_file
 
         if not os.path.exists(self.config["media_dir"]):
             os.mkdir(self.config["media_dir"])
 
-    def sync(self, ids=None, from_id=None):
-        """
-        Sync syncs messages from Telegram from the last synced message
-        into the local SQLite DB.
+    async def _init(self, config: ConfigFileType, session_file: str,
+                    db: DB) -> None:
+        self.client = await self.new_client(session_file, config)
+
+    async def sync(self, ids=None, from_id=None) -> None:
+        """ Sync syncs messages from Telegram from the last synced message
+            into the local SQLite DB.
         """
 
         if ids:
@@ -48,14 +96,13 @@ class Sync:
             logging.info("fetching from last message id={} ({})".format(
                 last_id, last_date))
 
-        group_id = self._get_group_id(self.config["group"])
+        group_id = await self._get_group_id(self.config["group"])
 
         n = 0
         while True:
             has = False
-            for m in self._get_messages(group_id,
-                                        offset_id=last_id if last_id else 0,
-                                        ids=ids):
+            async for m in self._get_messages(
+                    group_id, offset_id=last_id if last_id else 0, ids=ids):
                 if not m:
                     continue
 
@@ -82,8 +129,9 @@ class Sync:
             self.db.commit()
             if has:
                 last_id = m.id
-                logging.info("fetched {} messages. sleeping for {} seconds".format(
-                    n, self.config["fetch_wait"]))
+                logging.info(
+                    "fetched {} messages. sleeping for {} seconds".format(
+                        n, self.config["fetch_wait"]))
                 time.sleep(self.config["fetch_wait"])
             else:
                 break
@@ -91,58 +139,70 @@ class Sync:
         self.db.commit()
         if self.config.get("use_takeout", False):
             self.finish_takeout()
-        logging.info(
-            "finished. fetched {} messages. last message = {}".format(n, last_date))
+        logging.info("finished. fetched {} messages. last message = {}".format(
+            n, last_date))
 
-    def new_client(self, session, config):
+    async def new_client(self, session, config) -> TelegramClient:
         if "proxy" in config and config["proxy"].get("enable"):
             proxy = config["proxy"]
-            client = TelegramClient(session, config["api_id"], config["api_hash"], proxy=(proxy["protocol"], proxy["addr"], proxy["port"]))
+            client = TelegramClient(
+                session,
+                config["api_id"],
+                config["api_hash"],
+                proxy=(proxy["protocol"], proxy["addr"], proxy["port"]))
         else:
-            client = TelegramClient(session, config["api_id"], config["api_hash"])
+            client = TelegramClient(session, config["api_id"],
+                                    config["api_hash"])
         # hide log messages
         # upstream issue https://github.com/LonamiWebs/Telethon/issues/3840
         client_logger = client._log["telethon.client.downloads"]
         client_logger._info = client_logger.info
 
         def patched_info(*args, **kwargs):
-            if (
-                args[0] == "File lives in another DC" or
-                args[0] == "Starting direct file download in chunks of %d at %d, stride %d"
-            ):
+            if (args[0] == "File lives in another DC" or args[0] ==
+                    "Starting direct file download in chunks of %d at %d, stride %d"
+               ):
                 return client_logger.debug(*args, **kwargs)
             client_logger._info(*args, **kwargs)
+
         client_logger.info = patched_info
 
-        client.start()
+        await client.start()
         if config.get("use_takeout", False):
             for retry in range(3):
                 try:
-                    takeout_client = client.takeout(finalize=True).__enter__()
+                    takeout_client = await client.takeout(finalize=True
+                                                         ).__aenter__()
                     # check if the takeout session gets invalidated
-                    takeout_client.get_messages("me")
+                    await takeout_client.get_messages("me")
                     return takeout_client
                 except errors.TakeoutInitDelayError as e:
                     logging.info(
                         "please allow the data export request received from Telegram on your device. "
                         "you can also wait for {} seconds.".format(e.seconds))
                     logging.info(
-                        "press Enter key after allowing the data export request to continue..")
+                        "press Enter key after allowing the data export request to continue.."
+                    )
                     input()
                     logging.info("trying again.. ({})".format(retry + 2))
                 except errors.TakeoutInvalidError:
-                    logging.info("takeout invalidated. delete the session.session file and try again.")
+                    logging.info(
+                        "takeout invalidated. delete the session.session file and try again."
+                    )
             else:
                 logging.info("could not initiate takeout.")
-                raise(Exception("could not initiate takeout."))
+                raise Exception("could not initiate takeout.")
         else:
             return client
 
-    def finish_takeout(self):
+    def finish_takeout(self) -> None:
         self.client.__exit__(None, None, None)
 
-    def _get_messages(self, group, offset_id, ids=None) -> Message:
-        messages = self._fetch_messages(group, offset_id, ids)
+    async def _get_messages(self,
+                            group,
+                            offset_id,
+                            ids=None) -> AsyncGenerator[Message, None]:
+        messages = await self._fetch_messages(group, offset_id, ids)
         # https://docs.telethon.dev/en/latest/quick-references/objects-reference.html#message
         for m in messages:
             if not m or not m.sender:
@@ -153,24 +213,31 @@ class Sync:
             med = None
             if m.media:
                 # If it's a sticker, get the alt value (unicode emoji).
-                if isinstance(m.media, telethon.tl.types.MessageMediaDocument) and \
-                        hasattr(m.media, "document") and \
-                        m.media.document.mime_type == "application/x-tgsticker":
-                    alt = [a.alt for a in m.media.document.attributes if isinstance(
-                        a, telethon.tl.types.DocumentAttributeSticker)]
+                if (isinstance(m.media, telethon.tl.types.MessageMediaDocument)
+                        and hasattr(m.media, "document") and
+                        m.media.document.mime_type
+                        == "application/x-tgsticker"):
+                    alt = [
+                        a.alt
+                        for a in m.media.document.attributes
+                        if isinstance(
+                            a, telethon.tl.types.DocumentAttributeSticker)
+                    ]
                     if len(alt) > 0:
                         sticker = alt[0]
                 elif isinstance(m.media, telethon.tl.types.MessageMediaPoll):
                     med = self._make_poll(m)
                 else:
-                    med = self._get_media(m)
+                    med = await self._get_media(m)
 
             # Message.
             typ = "message"
             if m.action:
-                if isinstance(m.action, telethon.tl.types.MessageActionChatAddUser):
+                if isinstance(m.action,
+                              telethon.tl.types.MessageActionChatAddUser):
                     typ = "user_joined"
-                elif isinstance(m.action, telethon.tl.types.MessageActionChatDeleteUser):
+                elif isinstance(m.action,
+                                telethon.tl.types.MessageActionChatDeleteUser):
                     typ = "user_left"
 
             yield Message(
@@ -179,26 +246,31 @@ class Sync:
                 date=m.date,
                 edit_date=m.edit_date,
                 content=sticker if sticker else m.raw_text,
-                reply_to=m.reply_to_msg_id if m.reply_to and m.reply_to.reply_to_msg_id else None,
+                reply_to=m.reply_to_msg_id
+                if m.reply_to and m.reply_to.reply_to_msg_id else None,
                 user=self._get_user(m.sender),
-                media=med
-            )
+                media=med)
 
-    def _fetch_messages(self, group, offset_id, ids=None) -> Message:
+    async def _fetch_messages(self,
+                              group,
+                              offset_id,
+                              ids=None) -> telethon.hints.TotalList:
         try:
             if self.config.get("use_takeout", False):
                 wait_time = 0
             else:
                 wait_time = None
-            messages = self.client.get_messages(group, offset_id=offset_id,
-                                                limit=self.config["fetch_batch_size"],
-                                                wait_time=wait_time,
-                                                ids=ids,
-                                                reverse=True)
+            messages = await self.client.get_messages(
+                group,
+                offset_id=offset_id,
+                limit=self.config["fetch_batch_size"],
+                wait_time=wait_time,
+                ids=ids,
+                reverse=True)
             return messages
         except errors.FloodWaitError as e:
-            logging.info(
-                "flood waited: have to wait {} seconds".format(e.seconds))
+            logging.info("flood waited: have to wait {} seconds".format(
+                e.seconds))
 
     def _get_user(self, u) -> User:
         tags = []
@@ -211,8 +283,7 @@ class Sync:
                 first_name=None,
                 last_name=None,
                 tags=tags,
-                avatar=None
-            )
+                avatar=None)
 
         if is_normal_user:
             if u.bot:
@@ -231,8 +302,8 @@ class Sync:
                 fname = self._download_avatar(u)
                 avatar = fname
             except Exception as e:
-                logging.error(
-                    "error downloading avatar: #{}: {}".format(u.id, e))
+                logging.error("error downloading avatar: #{}: {}".format(
+                    u.id, e))
 
         return User(
             id=u.id,
@@ -240,15 +311,17 @@ class Sync:
             first_name=u.first_name if is_normal_user else None,
             last_name=u.last_name if is_normal_user else None,
             tags=tags,
-            avatar=avatar
-        )
+            avatar=avatar)
 
-    def _make_poll(self, msg):
+    def _make_poll(self, msg) -> None | Media:
         if not msg.media.results or not msg.media.results.results:
             return None
 
-        options = [{"label": a.text, "count": 0, "correct": False}
-                   for a in msg.media.poll.answers]
+        options = [{
+            "label": a.text,
+            "count": 0,
+            "correct": False
+        } for a in msg.media.poll.answers]
 
         total = msg.media.results.total_voters
         if msg.media.results.results:
@@ -264,10 +337,9 @@ class Sync:
             url=None,
             title=msg.media.poll.question,
             description=json.dumps(options),
-            thumb=None
-        )
+            thumb=None)
 
-    def _get_media(self, msg):
+    async def _get_media(self, msg) -> Optional[Media]:
         if isinstance(msg.media, telethon.tl.types.MessageMediaWebPage) and \
                 not isinstance(msg.media.webpage, telethon.tl.types.WebPageEmpty):
             return Media(
@@ -275,58 +347,55 @@ class Sync:
                 type="webpage",
                 url=msg.media.webpage.url,
                 title=msg.media.webpage.title,
-                description=msg.media.webpage.description if msg.media.webpage.description else None,
-                thumb=None
-            )
+                description=msg.media.webpage.description
+                if msg.media.webpage.description else None,
+                thumb=None)
         elif isinstance(msg.media, telethon.tl.types.MessageMediaPhoto) or \
                 isinstance(msg.media, telethon.tl.types.MessageMediaDocument) or \
                 isinstance(msg.media, telethon.tl.types.MessageMediaContact):
             if self.config["download_media"]:
                 # Filter by extensions?
                 if len(self.config["media_mime_types"]) > 0:
-                    if hasattr(msg, "file") and hasattr(msg.file, "mime_type") and msg.file.mime_type:
-                        if msg.file.mime_type not in self.config["media_mime_types"]:
-                            logging.info(
-                                "skipping media #{} / {}".format(msg.file.name, msg.file.mime_type))
+                    if hasattr(msg, "file") and hasattr(
+                            msg.file, "mime_type") and msg.file.mime_type:
+                        if msg.file.mime_type not in self.config[
+                                "media_mime_types"]:
+                            logging.info("skipping media #%s / %s",
+                                         msg.file.name, msg.file.mime_type)
                             return
 
-                logging.info("downloading media #{}".format(msg.id))
-                try:
-                    basename, fname, thumb = self._download_media(msg)
-                    return Media(
-                        id=msg.id,
-                        type="photo",
-                        url=fname,
-                        title=basename,
-                        description=None,
-                        thumb=thumb
-                    )
-                except Exception as e:
-                    logging.error(
-                        "error downloading media: #{}: {}".format(msg.id, e))
+                logging.info("downloading media #%s", msg.id)
+                basename, fname, thumb = await self._download_media(msg)
+                return Media(
+                    id=msg.id,
+                    type="photo",
+                    url=fname,
+                    title=basename,
+                    description=None,
+                    thumb=thumb)
 
-    def _download_media(self, msg) -> [str, str, str]:
-        """
-        Download a media / file attached to a message and return its original
-        filename, sanitized name on disk, and the thumbnail (if any). 
-        """
+    async def _download_media(self, msg) -> DownloadMediaReturn:
+        ''' Download a media / file attached to a message and return its original
+            filename, sanitized name on disk, and the thumbnail (if any).
+        '''
         # Download the media to the temp dir and copy it back as
         # there does not seem to be a way to get the canonical
         # filename before the download.
-        fpath = self.client.download_media(msg, file=tempfile.gettempdir())
+        fpath = await self.client.download_media(
+            msg, file=tempfile.gettempdir())
         basename = os.path.basename(fpath)
 
-        newname = "{}.{}".format(msg.id, self._get_file_ext(basename))
-        shutil.move(fpath, os.path.join(self.config["media_dir"], newname))
+        newname = f'{msg.id}.{self._get_file_ext(basename)}'
+        fmove(fpath, os.path.join(self.config['media_dir'], newname))
 
         # If it's a photo, download the thumbnail.
         tname = None
         if isinstance(msg.media, telethon.tl.types.MessageMediaPhoto):
-            tpath = self.client.download_media(
+            tpath = await self.client.download_media(
                 msg, file=tempfile.gettempdir(), thumb=1)
             tname = "thumb_{}.{}".format(
                 msg.id, self._get_file_ext(os.path.basename(tpath)))
-            shutil.move(tpath, os.path.join(self.config["media_dir"], tname))
+            fmove(tpath, os.path.join(self.config["media_dir"], tname))
 
         return basename, newname, tname
 
@@ -338,7 +407,7 @@ class Sync:
 
         return ".file"
 
-    def _download_avatar(self, user):
+    def _download_avatar(self, user) -> Optional[str]:
         fname = "avatar_{}.jpg".format(user.id)
         fpath = os.path.join(self.config["media_dir"], fname)
 
@@ -360,7 +429,7 @@ class Sync:
 
         return fname
 
-    def _get_group_id(self, group):
+    async def _get_group_id(self, group: Union[str, int]) -> int:
         """
         Syncs the Entity cache and returns the Entity ID for the specified group,
         which can be a str/int for group ID, group name, or a group username.
@@ -370,7 +439,7 @@ class Sync:
         # Get all dialogs for the authorized user, which also
         # syncs the entity cache to get latest entities
         # ref: https://docs.telethon.dev/en/latest/concepts/entities.html#getting-entities
-        _ = self.client.get_dialogs()
+        await self.client.get_dialogs()
 
         try:
             # If the passed group is a group ID, extract it.
@@ -381,10 +450,12 @@ class Sync:
             pass
 
         try:
-            entity = self.client.get_entity(group)
+            entity = await self.client.get_entity(group)
+
         except ValueError:
-            logging.critical("the group: {} does not exist,"
-                             " or the authorized user is not a participant!".format(group))
+            logging.critical(
+                "the group: %s does not exist,"
+                " or the authorized user is not a participant!", group)
             # This is a critical error, so exit with code: 1
             exit(1)
 
