@@ -388,7 +388,18 @@ class Sync(aobject):
         # Download the media to the temp dir and copy it back as
         # there does not seem to be a way to get the canonical
         # filename before the download.
-        fpath = await self.client.download_media(msg, file=self.media_tmp_dir)
+        error_sleep_s = 60
+        while True:
+            try:
+                fpath = await self.client.download_media(
+                    msg, file=self.media_tmp_dir)
+                break
+            except ValueError:
+                logging.error("error downloading media #%s. Sleeping %ss",
+                              msg.id, error_sleep_s)
+                time.sleep(error_sleep_s)
+                error_sleep_s *= 2
+
         basename = os.path.basename(fpath)
 
         newname = f'{msg.id}.{self._get_file_ext(basename)}'
