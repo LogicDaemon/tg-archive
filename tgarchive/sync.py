@@ -145,7 +145,7 @@ class Sync(aobject):
 
         self.db.commit()
         if self.config.get("use_takeout", False):
-            self.finish_takeout()
+            await self.finish_takeout()
         logging.info("finished. fetched {} messages. last message = {}".format(
             n, last_date))
 
@@ -202,8 +202,8 @@ class Sync(aobject):
         else:
             return client
 
-    def finish_takeout(self) -> None:
-        self.client.__exit__(None, None, None)
+    async def finish_takeout(self) -> None:
+        await self.client.__aexit__(None, None, None)
 
     async def _get_messages(self,
                             group,
