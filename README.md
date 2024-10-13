@@ -4,7 +4,7 @@
 
 **tg-archive** is a tool for exporting Telegram group chats into static websites, preserving chat history like mailing list archives.
 
-forked from [@knadh](https://github.com/knadh/tg-archive) to fix installing on Windows and/or python 3.12 (I don't know what the problem is yet).
+forked from [@knadh](https://github.com/knadh/tg-archive) to fix installing on Windows and/or python 3.13.
 
 ## Preview
 The [@fossunited](https://tg.fossunited.org) Telegram group archive.

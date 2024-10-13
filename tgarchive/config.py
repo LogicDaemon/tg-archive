@@ -1,3 +1,4 @@
+""" Defining configuration types and loading configuration from file """
 import os
 from typing import TypedDict
 

@@ -1,61 +1,74 @@
-from collections import deque, namedtuple
+""" Receive messages from the Telegram group to the local DB """
+import atexit
+import glob
 import json
 import logging
 import os
+import pathlib
 import shutil
 import threading
 import time
-from io import BytesIO
+import typing
+from collections import deque
 from sys import exit
-from typing import AsyncGenerator, Deque, Optional, Union
+from typing import AsyncGenerator, Deque, NamedTuple, Optional, Union
 
 import telethon.hints
 import telethon.tl.types
-from PIL import Image
 from telethon import TelegramClient, errors
 
 from .aobject import aobject
 from .config import ConfigFileType
 from .db import DB, Media, Message, User
 
-import atexit
-
-moving_thread: Optional[threading.Thread] = None
 move_event = threading.Event()
 move_files: Deque[tuple[str, str]] = deque()
 exit_signaled: bool = False
 
-DownloadMediaReturn = namedtuple("DownloadMediaReturn",
-                                 ["basename", "fname", "thumb"])
+
+class DownloadMediaReturn(NamedTuple):
+    basename: str
+    fname: str
+    thumb: str
 
 
 def moving_thread_fn() -> None:
-    while not exit_signaled:
-        while move_files:
-            src, dest = move_files.popleft()
-            shutil.move(src, dest)
-        move_event.clear()
+    while True:
         move_event.wait()
+        move_event.clear()
+        try:
+            src, dest = move_files.popleft()
+        except IndexError:
+            if not exit_signaled:
+                continue
+        shutil.move(src, dest)
+        logging.info('moved "%s" -> "%s"', src, dest)
+
+
+moving_thread = threading.Thread(target=moving_thread_fn)
+moving_thread.start()
 
 
 def finish_moving_thread() -> None:
-    global exit_signaled, moving_thread
+    global exit_signaled
     exit_signaled = True
-    if moving_thread is not None:
+    if moving_thread.is_alive():
+        logging.info("waiting for moving thread to finish..")
         move_event.set()
         moving_thread.join()
-        moving_thread = None
+
+
+atexit.register(finish_moving_thread)
 
 
 def fmove(src: Union[str, os.PathLike], dest: Union[str, os.PathLike]) -> None:
     """ Move a file from src to dest """
-    global moving_thread
     move_files.append((src, dest))
     move_event.set()
-    if moving_thread is None:
-        moving_thread = threading.Thread(target=moving_thread_fn)
-        moving_thread.start()
-        atexit.register(finish_moving_thread)
+
+
+class TakeoutFailedError(Exception):
+    pass
 
 
 class Sync(aobject):
@@ -65,20 +78,19 @@ class Sync(aobject):
     config: ConfigFileType
     db: DB
     client: TelegramClient
-    root: str
-    media_dir: str
+    # root: pathlib.Path
+    media_dir: pathlib.Path
     media_tmp_dir: str
 
-    def __init__(self, *, config: ConfigFileType, dl_root: str,
+    def __init__(self, *, config: ConfigFileType, dl_root: pathlib.Path,
                  session_file: str, db: DB) -> None:
         self.config = config
-        self.root = dl_root
+        # self.root = dl_root
         self.session_file = session_file
         self.db = db
 
-        self.media_dir = media_dir = os.path.join(dl_root,
-                                                  self.config["media_dir"])
-        os.makedirs(media_dir, exist_ok=True)
+        self.media_dir = media_dir = dl_root / self.config["media_dir"]
+        media_dir.mkdir(parents=True, exist_ok=True)
         self.media_tmp_dir = media_tmp_dir = os.path.join(
             dl_root, self.config["media_tmp_dir"])
         os.makedirs(media_tmp_dir, exist_ok=True)
@@ -87,21 +99,23 @@ class Sync(aobject):
                     session_file: str, db: DB) -> None:
         self.client = await self.new_client(session_file, config)
 
-    async def sync(self, ids=None, from_id=None) -> None:
+    async def sync(self,
+                   ids: Optional[list[int]] = None,
+                   from_id: Optional[int] = None) -> None:
         """ Sync syncs messages from Telegram from the last synced message
             into the local SQLite DB.
         """
 
         if ids:
             last_id, last_date = (ids, None)
-            logging.info("fetching message id={}".format(ids))
+            logging.info('fetching message id=%s', ids)
         elif from_id:
             last_id, last_date = (from_id, None)
-            logging.info("fetching from last message id={}".format(last_id))
+            logging.info('fetching from last message id=%s', last_id)
         else:
             last_id, last_date = self.db.get_last_message_id()
-            logging.info("fetching from last message id={} ({})".format(
-                last_id, last_date))
+            logging.info('fetching from last message id=%s (%s)', last_id,
+                         last_date)
 
         group_id = await self._get_group_id(self.config["group"])
 
@@ -109,7 +123,7 @@ class Sync(aobject):
         while True:
             has = False
             async for m in self._get_messages(
-                    group_id, offset_id=last_id if last_id else 0, ids=ids):
+                    group_id, offset_id=last_id, ids=ids):
                 if not m:
                     continue
 
@@ -126,7 +140,7 @@ class Sync(aobject):
                 last_date = m.date
                 n += 1
                 if n % 300 == 0:
-                    logging.info("fetched {} messages".format(n))
+                    logging.info("fetched %s messages", n)
                     self.db.commit()
 
                 if 0 < self.config["fetch_limit"] <= n or ids:
@@ -136,20 +150,23 @@ class Sync(aobject):
             self.db.commit()
             if has:
                 last_id = m.id
-                logging.info(
-                    "fetched {} messages. sleeping for {} seconds".format(
-                        n, self.config["fetch_wait"]))
-                time.sleep(self.config["fetch_wait"])
+                wait_s = self.config["fetch_wait"]
+                logging.info("fetched %s messages. sleeping for %s seconds", n,
+                             wait_s)
+                time.sleep(wait_s)
             else:
                 break
 
         self.db.commit()
         if self.config.get("use_takeout", False):
             await self.finish_takeout()
-        logging.info("finished. fetched {} messages. last message = {}".format(
-            n, last_date))
+        logging.info("finished. fetched %s messages. last message = %s", n,
+                     last_date)
 
-    async def new_client(self, session, config) -> TelegramClient:
+    async def new_client(self,
+                         session: typing.Union[str, pathlib.Path,
+                                               'telethon.session.Session'],
+                         config: ConfigFileType) -> TelegramClient:
         if "proxy" in config and config["proxy"].get("enable"):
             proxy = config["proxy"]
             client = TelegramClient(
@@ -184,31 +201,31 @@ class Sync(aobject):
                     await takeout_client.get_messages("me")
                     return takeout_client
                 except errors.TakeoutInitDelayError as e:
-                    logging.info(
+                    logging.warning(
                         "please allow the data export request received from Telegram on your device. "
-                        "you can also wait for {} seconds.".format(e.seconds))
-                    logging.info(
-                        "press Enter key after allowing the data export request to continue.."
-                    )
+                        "you can also wait for %s seconds.\n"
+                        "press Enter key after allowing the data export request to continue..",
+                        e.seconds)
                     input()
-                    logging.info("trying again.. ({})".format(retry + 2))
+                    logging.info("trying again.. (%s)", retry + 2)
                 except errors.TakeoutInvalidError:
-                    logging.info(
+                    logging.exception(
                         "takeout invalidated. delete the session.session file and try again."
                     )
             else:
-                logging.info("could not initiate takeout.")
-                raise Exception("could not initiate takeout.")
+                logging.warning()("could not initiate takeout.")
+                raise TakeoutFailedError()
         else:
             return client
 
     async def finish_takeout(self) -> None:
         await self.client.__aexit__(None, None, None)
 
-    async def _get_messages(self,
-                            group,
-                            offset_id,
-                            ids=None) -> AsyncGenerator[Message, None]:
+    async def _get_messages(
+            self,
+            group: int,
+            offset_id: int,
+            ids: Optional[int] = None) -> AsyncGenerator[Message, None]:
         messages = await self._fetch_messages(group, offset_id, ids)
         # https://docs.telethon.dev/en/latest/quick-references/objects-reference.html#message
         for m in messages:
@@ -259,29 +276,30 @@ class Sync(aobject):
                 media=med)
 
     async def _fetch_messages(self,
-                              group,
-                              offset_id,
-                              ids=None) -> telethon.hints.TotalList:
+                              group: int,
+                              offset_id: int,
+                              ids: Optional[list[int]] = None
+                             ) -> telethon.hints.TotalList[Message]:
+        """ Fetch messages from the Telegram group """
+
         try:
-            if self.config.get("use_takeout", False):
-                wait_time = 0
-            else:
-                wait_time = None
-            messages = await self.client.get_messages(
+            return await self.client.get_messages(
                 group,
                 offset_id=offset_id,
                 limit=self.config["fetch_batch_size"],
-                wait_time=wait_time,
-                ids=ids,
-                reverse=True)
-            return messages
+                wait_time=0 if self.config.get("use_takeout", False) else None,
+                reverse=True,
+                **({
+                    ids: ids,
+                } if ids else {}))
         except errors.FloodWaitError as e:
-            logging.info("flood waited: have to wait {} seconds".format(
-                e.seconds))
+            logging.info("flood waited: have to wait %s seconds", e.seconds)
 
-    async def _get_user(self, u) -> User:
+    async def _get_user(
+        self, u: Union[telethon.tl.types.ChannelForbidden,
+                       telethon.tl.types.User]
+    ) -> User:
         tags = []
-        is_normal_user = isinstance(u, telethon.tl.types.User)
 
         if isinstance(u, telethon.tl.types.ChannelForbidden):
             return User(
@@ -291,6 +309,8 @@ class Sync(aobject):
                 last_name=None,
                 tags=tags,
                 avatar=None)
+
+        is_normal_user = isinstance(u, telethon.tl.types.User)
 
         if is_normal_user:
             if u.bot:
@@ -309,8 +329,7 @@ class Sync(aobject):
                 fname = await self._download_avatar(u)
                 avatar = fname
             except Exception as e:
-                logging.error("error downloading avatar: #{}: {}".format(
-                    u.id, e))
+                logging.error("error downloading avatar: #%s: %s", u.id, e)
 
         return User(
             id=u.id,
@@ -320,7 +339,7 @@ class Sync(aobject):
             tags=tags,
             avatar=avatar)
 
-    def _make_poll(self, msg) -> None | Media:
+    def _make_poll(self, msg: Message) -> None | Media:
         if not msg.media.results or not msg.media.results.results:
             return None
 
@@ -346,7 +365,7 @@ class Sync(aobject):
             description=json.dumps(options),
             thumb=None)
 
-    async def _get_media(self, msg) -> Optional[Media]:
+    async def _get_media(self, msg: Message) -> Optional[Media]:
         if isinstance(msg.media, telethon.tl.types.MessageMediaWebPage) and \
                 not isinstance(msg.media.webpage, telethon.tl.types.WebPageEmpty):
             return Media(
@@ -381,10 +400,10 @@ class Sync(aobject):
                     description=None,
                     thumb=thumb)
 
-    async def _download_media(self, msg) -> DownloadMediaReturn:
-        ''' Download a media / file attached to a message and return its original
+    async def _download_media(self, msg: Message) -> DownloadMediaReturn:
+        """ Download a media / file attached to a message and return its original
             filename, sanitized name on disk, and the thumbnail (if any).
-        '''
+        """
         # Download the media to the temp dir and copy it back as
         # there does not seem to be a way to get the canonical
         # filename before the download.
@@ -401,8 +420,12 @@ class Sync(aobject):
                 error_sleep_s *= 2
 
         basename = os.path.basename(fpath)
+        stem, ext = os.path.splitext(basename)
+        if len(ext) > 6:
+            stem = basename
+            ext = ''
 
-        newname = f'{msg.id}.{self._get_file_ext(basename)}'
+        newname = f'{msg.id} {stem}'[:250 - len(ext)] + ext
         fmove(fpath, os.path.join(self.media_dir, newname))
 
         # If it's a photo, download the thumbnail.
@@ -410,41 +433,32 @@ class Sync(aobject):
         if isinstance(msg.media, telethon.tl.types.MessageMediaPhoto):
             tpath = await self.client.download_media(
                 msg, file=self.media_tmp_dir, thumb=1)
-            tname = "thumb_{}.{}".format(
-                msg.id, self._get_file_ext(os.path.basename(tpath)))
+            tname = os.path.basename(tpath)
             fmove(tpath, os.path.join(self.media_dir, tname))
 
-        return basename, newname, tname
+        return DownloadMediaReturn(basename, newname, tname)
 
-    def _get_file_ext(self, f) -> str:
-        if "." in f:
-            e = f.split(".")[-1]
-            if len(e) < 6:
-                return e
+    async def _download_avatar(
+            self, user: telethon.tl.types.ChannelForbidden) -> Optional[str]:
+        fpath_prefix = os.path.join(self.media_dir, f'avatar_{user.id} ')
 
-        return ".file"
+        for existing in glob.iglob(fpath_prefix + '*'):
+            return os.path.basename(existing)
 
-    async def _download_avatar(self, user) -> Optional[str]:
-        fname = "avatar_{}.jpg".format(user.id)
-        fpath = os.path.join(self.media_dir, fname)
-
-        if os.path.exists(fpath):
-            return fname
-
-        logging.info("downloading avatar #{}".format(user.id))
+        logging.info('downloading avatar #%s', user.id)
 
         # Download the file into a container, resize it, and then write to disk.
-        b = BytesIO()
-        profile_photo = await self.client.download_profile_photo(user, file=b)
+        profile_photo = await self.client.download_profile_photo(
+            user,
+            file=self.media_tmp_dir,
+            download_big=bool(self.config["avatar_size"]))
         if profile_photo is None:
-            logging.info("user has no avatar #{}".format(user.id))
+            logging.info("user has no avatar #%s", user.id)
             return None
+        fpath = fpath_prefix + os.path.basename(profile_photo)
+        fmove(profile_photo, fpath)
 
-        im = Image.open(b)
-        im.thumbnail(self.config["avatar_size"], Image.LANCZOS)
-        im.save(fpath, "JPEG")
-
-        return fname
+        return os.path.basename(fpath)
 
     async def _get_group_id(self, group: Union[str, int]) -> int:
         """

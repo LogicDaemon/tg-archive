@@ -1,23 +1,23 @@
+""" A tool for exporting and archiving Telegram groups to webpages """
+
 import argparse
+import asyncio
 import logging
 import os
+import pathlib
 import shutil
 import sys
-import asyncio
 
 from .db import DB
-from .meta import program_name, __version__
+from .meta import __version__, program_name
+
+import appdirs
 
 logging.basicConfig(format="%(asctime)s: %(message)s", level=logging.INFO)
 
 
 def app_data_dir() -> str:
-    if sys.platform == "win32":
-        d = os.path.join(
-            os.getenv('LOCALAPPDATA') or
-            os.path.join(os.getenv('USERPROFILE'), 'Application Data'),
-            program_name)
-    d = os.path.join(os.path.expanduser("~"), '.local', 'share', program_name)
+    d = appdirs.user_data_dir(program_name)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -32,14 +32,14 @@ def default_session_file() -> str:
 async def amain() -> None:
     """ Run the CLI """
     p = argparse.ArgumentParser(
-        description="A tool for exporting and archiving Telegram groups to webpages.",
+        description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     p.add_argument(
         "-c",
         "--config",
         action="store",
-        type=str,
+        type=pathlib.Path,
         default="config.yaml",
         dest="config",
         help="path to the config file")
@@ -47,7 +47,7 @@ async def amain() -> None:
         "-d",
         "--data",
         action="store",
-        type=str,
+        type=pathlib.Path,
         default=os.path.join(app_data_dir(), "data.sqlite"),
         dest="data",
         help='path to the SQLite data file to store messages, default is "{default}"'
@@ -56,7 +56,7 @@ async def amain() -> None:
         "-se",
         "--session",
         action="store",
-        type=str,
+        type=pathlib.Path,
         default=default_session_file(),
         dest="session",
         help='path to the session file, default is "{default}"')
@@ -78,7 +78,7 @@ async def amain() -> None:
         "-p",
         "--path",
         action="store",
-        type=str,
+        type=pathlib.Path,
         default="example",
         dest="path",
         help="path to create the site")
@@ -117,14 +117,14 @@ async def amain() -> None:
         "-t",
         "--template",
         action="store",
-        type=str,
+        type=pathlib.Path,
         default="template.html",
         dest="template",
         help="path to the template file")
     b.add_argument(
         "--rss-template",
         action="store",
-        type=str,
+        type=pathlib.Path,
         default=None,
         dest="rss_template",
         help="path to the rss template file")
@@ -209,8 +209,7 @@ async def amain() -> None:
             b.load_rss_template(args.rss_template)
         b.build()
 
-        logging.info("published to directory '{}'".format(
-            config["publish_dir"]))
+        logging.info('published to directory "%s"', config["publish_dir"])
 
 
 def main() -> None:
