@@ -8,12 +8,13 @@ import pathlib
 import shutil
 import sys
 
+import appdirs
+
 from .db import DB
 from .meta import __version__, program_name
 
-import appdirs
-
-logging.basicConfig(format="%(asctime)s: %(message)s", level=logging.INFO)
+log = logging.getLogger(
+    os.path.basename(__file__) if __name__ == '__main__' else __name__)
 
 
 def app_data_dir() -> str:
@@ -61,9 +62,9 @@ async def amain() -> None:
         dest="session",
         help='path to the session file, default is "{default}"')
     p.add_argument(
-        "-v",
+        "-V",
         "--version",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         dest="version",
         help="display version")
 
@@ -71,7 +72,7 @@ async def amain() -> None:
     n.add_argument(
         "-n",
         "--new",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         dest="new",
         help="initialize a new site")
     n.add_argument(
@@ -87,7 +88,7 @@ async def amain() -> None:
     s.add_argument(
         "-s",
         "--sync",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         dest="sync",
         help="sync data from telegram group to the local DB")
     s.add_argument(
@@ -110,7 +111,7 @@ async def amain() -> None:
     b.add_argument(
         "-b",
         "--build",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         dest="build",
         help="build the static site")
     b.add_argument(
@@ -130,15 +131,27 @@ async def amain() -> None:
         help="path to the rss template file")
     b.add_argument(
         "--symlink",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         dest="symlink",
         help="symlink media and other static files instead of copying")
+    p.add_argument(
+        "--verbose",
+        "-v",
+        type=bool,
+        action=argparse.BooleanOptionalAction,
+        help="logging level",
+    )
 
     args = p.parse_args(args=None if sys.argv[1:] else ['--help'])
 
     if args.version:
         print(f"v{__version__}")
         return
+
+    logging.basicConfig(
+        format="%(asctime)s: %(message)s",
+        level=logging.DEBUG
+        if args.verbose or os.getenv('DEBUG') else logging.INFO)
 
     # Setup new site.
     if args.new:
