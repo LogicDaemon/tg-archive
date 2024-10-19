@@ -160,6 +160,10 @@ async def amain() -> None:
             logging.error("unable to find bundled example directory")
             sys.exit(1)
 
+        if os.path.exists(os.path.join(args.path, "config.yaml")):
+            logging.error("site already exists at '%s'", args.path)
+            sys.exit(1)
+
         logging.info("creating new site at '%s'", args.path)
         shutil.copytree(exdir, args.path, dirs_exist_ok=True)
 
@@ -176,6 +180,7 @@ async def amain() -> None:
                 for f in filenames:
                     if os.stat(f).st_mode & 0o600 != 0o600:
                         os.chmod(f, 0o600 | base_mode)
+        log.info("site created, please edit the config file")
         return
 
     from .config import get_config
@@ -208,7 +213,6 @@ async def amain() -> None:
             if cfg.get("use_takeout", False):
                 s.finish_takeout()
             sys.exit(1)
-        return
 
     # Build static site.
     if args.build:
