@@ -39,8 +39,8 @@ def moving_thread_fn() -> None:
         try:
             src, dest = move_files.popleft()
         except IndexError:
-            if not exit_signaled:
-                continue
+            if exit_signaled:
+                break
         shutil.move(src, dest)
         logging.info('moved "%s" -> "%s"', src, dest)
 
