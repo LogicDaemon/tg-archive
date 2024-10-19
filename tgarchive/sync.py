@@ -247,7 +247,7 @@ class Sync(aobject):
                         if isinstance(
                             a, telethon.tl.types.DocumentAttributeSticker)
                     ]
-                    if len(alt) > 0:
+                    if alt:
                         sticker = alt[0]
                 elif isinstance(m.media, telethon.tl.types.MessageMediaPoll):
                     med = self._make_poll(m)
@@ -381,7 +381,7 @@ class Sync(aobject):
                 isinstance(msg.media, telethon.tl.types.MessageMediaContact):
             if self.config["download_media"]:
                 # Filter by extensions?
-                if len(self.config["media_mime_types"]) > 0:
+                if self.config["media_mime_types"]:
                     if hasattr(msg, "file") and hasattr(
                             msg.file, "mime_type") and msg.file.mime_type:
                         if msg.file.mime_type not in self.config[
@@ -451,7 +451,7 @@ class Sync(aobject):
         profile_photo = await self.client.download_profile_photo(
             user,
             file=self.media_tmp_dir,
-            download_big=bool(self.config["avatar_size"]))
+            download_big=self.config["avatar_size"])
         if profile_photo is None:
             logging.info("user has no avatar #%s", user.id)
             return None

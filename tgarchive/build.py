@@ -1,6 +1,5 @@
 """ Build the static site from the database """
 import logging
-import math
 import os
 import re
 import shutil
@@ -40,7 +39,7 @@ class Build:
         self._create_publish_dir()
 
         timeline = list(self.db.get_timeline())
-        if len(timeline) == 0:
+        if not timeline:
             logging.info("no data found to publish site")
             quit()
 
@@ -55,22 +54,23 @@ class Build:
         for month in timeline:
             # Get the days + message counts for the month.
             dayline = OrderedDict()
+            per_page = self.config["per_page"]
             for d in self.db.get_dayline(month.date.year, month.date.month,
-                                         self.config["per_page"]):
+                                         per_page):
                 dayline[d.slug] = d
 
             # Paginate and fetch messages for the month until the end..
             page = 0
             last_id = 0
             total = self.db.get_message_count(month.date.year, month.date.month)
-            total_pages = math.ceil(total / self.config["per_page"])
+            total_pages = -(-total // per_page)  # faster math.ceil without import
 
             while True:
                 messages = list(
                     self.db.get_messages(month.date.year, month.date.month,
-                                         last_id, self.config["per_page"]))
+                                         last_id, per_page))
 
-                if len(messages) == 0:
+                if not messages:
                     break
 
                 last_id = messages[-1].id

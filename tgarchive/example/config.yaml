@@ -15,7 +15,7 @@ group: "your_group_name or your_group_username or your_group_id(a negative numbe
 # Avatars and media will be downloaded into media_dir.
 download_media: True
 download_avatars: True
-avatar_size: [64, 64] # Width, Height.
+avatar_size: True  # download the full size avatar
 media_dir: "media"
 media_tmp_dir: "media/tmp"
 
