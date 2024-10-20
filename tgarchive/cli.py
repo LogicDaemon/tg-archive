@@ -160,7 +160,7 @@ async def amain() -> None:
             logging.error("unable to find bundled example directory")
             sys.exit(1)
 
-        if os.path.exists(os.path.join(args.path, "config.yaml")):
+        if (args.path / "config.yaml").is_file():
             logging.error("site already exists at '%s'", args.path)
             sys.exit(1)
 
@@ -185,6 +185,11 @@ async def amain() -> None:
 
     from .config import get_config
 
+    config_path: pathlib.Path = args.config
+    if not config_path.is_absolute() and not config_path.is_file():
+        config_path = args.path / config_path
+    config = get_config(config_path)
+
     # Sync from Telegram.
     if args.sync:
         # Import because the Telegram client import is quite heavy.
@@ -194,25 +199,20 @@ async def amain() -> None:
             logging.error("pass either --id or --from-id but not both")
             sys.exit(1)
 
-        cfg = get_config(os.path.join(args.path, args.config))
-        mode = "takeout" if cfg.get("use_takeout", False) else "standard"
-
         logging.info(
             "starting Telegram sync (batch_size=%s, limit=%s, wait=%s, mode=%s)",
-            cfg["fetch_batch_size"], cfg["fetch_limit"], cfg["fetch_wait"],
-            mode)
-        s = await Sync(
-            config=cfg,
-            dl_root=args.path,
-            session_file=args.session,
-            db=DB(args.data))
-        try:
-            await s.sync(args.id, args.from_id)
-        except KeyboardInterrupt:
-            logging.info("sync cancelled manually")
-            if cfg.get("use_takeout", False):
-                s.finish_takeout()
-            sys.exit(1)
+            config.fetch_batch_size, config.fetch_limit, config.fetch_wait,
+            "takeout" if config.use_takeout else "standard")
+        async with Sync(
+                config=config,
+                dl_root=args.path,
+                session_file=args.session,
+                db=DB(args.data)) as s:
+            try:
+                await s.sync(args.id, args.from_id)
+            except KeyboardInterrupt:
+                logging.info("sync cancelled manually")
+                sys.exit(1)
 
     # Build static site.
     if args.build:
@@ -220,13 +220,13 @@ async def amain() -> None:
 
         logging.info("building site")
         config = get_config(args.config)
-        b = Build(config, DB(args.data, config["timezone"]), args.symlink)
+        b = Build(config, DB(args.data, config.timezone), args.symlink)
         b.load_template(args.template)
         if args.rss_template:
             b.load_rss_template(args.rss_template)
         b.build()
 
-        logging.info('published to directory "%s"', config["publish_dir"])
+        logging.info('published to directory "%s"', config.publish_dir)
 
 
 def main() -> None:

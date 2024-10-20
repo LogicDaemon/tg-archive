@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import pathlib
 import sqlite3
 from datetime import datetime
 from typing import Generator, Iterator, NamedTuple, Optional, Tuple, Union
@@ -95,14 +96,14 @@ class DB:
     conn: sqlite3.Connection
     tz: Optional[pytz.tzinfo.BaseTzInfo]
 
-    def __init__(self, dbfile, tz: Optional[str] = None) -> None:
+    def __init__(self, dbfile: Union[pathlib.Path, str], tz: Optional[str] = None) -> None:
         self.tz = pytz.timezone(tz) if tz else None
 
         # Initialize the SQLite DB. If it's new, create the table schema.
         is_new = not os.path.isfile(dbfile)
 
         self.conn = sqlite3.Connection(
-            dbfile,
+            dbfile if isinstance(dbfile, str) else str(dbfile),
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
 
         # Add the custom PAGE() function to get the page number of a row

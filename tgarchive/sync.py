@@ -6,20 +6,22 @@ import logging
 import os
 import pathlib
 import shutil
+import sys
 import threading
 import time
-import typing
 from collections import deque
-from sys import exit
-from typing import AsyncGenerator, Deque, NamedTuple, Optional, Union
+from types import TracebackType
+from typing import AsyncGenerator, Deque, NamedTuple, Optional, Type, Union
 
 import telethon.hints
 import telethon.tl.types
 from telethon import TelegramClient, errors
 
 from .aobject import aobject
-from .config import ConfigFileType
+from .config import Config
 from .db import DB, Media, Message, User
+
+log = logging.getLogger(__name__)
 
 move_event = threading.Event()
 move_files: Deque[tuple[str, str]] = deque()
@@ -45,7 +47,7 @@ def moving_thread_fn() -> None:
         logging.info('moved "%s" -> "%s"', src, dest)
 
 
-moving_thread = threading.Thread(target=moving_thread_fn)
+moving_thread = threading.Thread(target=moving_thread_fn, daemon=True)
 moving_thread.start()
 
 
@@ -75,29 +77,26 @@ class Sync(aobject):
     """ Sync iterates and receives messages from the Telegram group to the
         local SQLite DB.
     """
-    config: ConfigFileType
+    config: Config
+    session_file: pathlib.Path
     db: DB
     client: TelegramClient
-    # root: pathlib.Path
     media_dir: pathlib.Path
-    media_tmp_dir: str
+    media_tmp_dir: pathlib.Path
 
-    def __init__(self, *, config: ConfigFileType, dl_root: pathlib.Path,
-                 session_file: str, db: DB) -> None:
+    def __init__(self, *, config: Config, dl_root: pathlib.Path,
+                 session_file: pathlib.Path, db: DB) -> None:
         self.config = config
-        # self.root = dl_root
         self.session_file = session_file
         self.db = db
 
+        media_dir: pathlib.Path
         self.media_dir = media_dir = dl_root / self.config["media_dir"]
         media_dir.mkdir(parents=True, exist_ok=True)
-        self.media_tmp_dir = media_tmp_dir = os.path.join(
-            dl_root, self.config["media_tmp_dir"])
-        os.makedirs(media_tmp_dir, exist_ok=True)
-
-    async def _init(self, *, config: ConfigFileType, dl_root: str,
-                    session_file: str, db: DB) -> None:
-        self.client = await self.new_client(session_file, config)
+        media_tmp_dir: pathlib.Path
+        self.media_tmp_dir = media_tmp_dir = dl_root / self.config[
+            "media_tmp_dir"]
+        media_tmp_dir.mkdir(parents=True, exist_ok=True)
 
     async def sync(self,
                    ids: Optional[list[int]] = None,
@@ -163,63 +162,47 @@ class Sync(aobject):
         logging.info("finished. fetched %s messages. last message = %s", n,
                      last_date)
 
-    async def new_client(self,
-                         session: typing.Union[str, pathlib.Path,
-                                               'telethon.session.Session'],
-                         config: ConfigFileType) -> TelegramClient:
-        if "proxy" in config and config["proxy"].get("enable"):
-            proxy = config["proxy"]
-            client = TelegramClient(
-                session,
-                config["api_id"],
-                config["api_hash"],
-                proxy=(proxy["protocol"], proxy["addr"], proxy["port"]))
-        else:
-            client = TelegramClient(session, config["api_id"],
-                                    config["api_hash"])
-        # hide log messages
-        # upstream issue https://github.com/LonamiWebs/Telethon/issues/3840
-        client_logger = client._log["telethon.client.downloads"]
-        client_logger._info = client_logger.info
-
-        def patched_info(*args, **kwargs):
-            if (args[0] == "File lives in another DC" or args[0] ==
-                    "Starting direct file download in chunks of %d at %d, stride %d"
-               ):
-                return client_logger.debug(*args, **kwargs)
-            client_logger._info(*args, **kwargs)
-
-        client_logger.info = patched_info
+    async def __aenter__(self) -> TelegramClient:
+        base_logger = logging.getLogger("telethon")
+        base_logger.setLevel(logging.WARNING)
+        kwargs = {'base_logger': base_logger}
+        proxy = self.config.proxy
+        if proxy.enable:
+            kwargs["proxy"] = (proxy.protocol, proxy.addr, proxy.port)
+        client = TelegramClient(self.session_file, self.config.api_id,
+                                self.config.api_hash, **kwargs)
 
         await client.start()
-        if config.get("use_takeout", False):
-            for retry in range(3):
-                try:
-                    takeout_client = await client.takeout(finalize=True
-                                                         ).__aenter__()
-                    # check if the takeout session gets invalidated
-                    await takeout_client.get_messages("me")
-                    return takeout_client
-                except errors.TakeoutInitDelayError as e:
-                    logging.warning(
-                        "please allow the data export request received from Telegram on your device. "
-                        "you can also wait for %s seconds.\n"
-                        "press Enter key after allowing the data export request to continue..",
-                        e.seconds)
-                    input()
-                    logging.info("trying again.. (%s)", retry + 2)
-                except errors.TakeoutInvalidError:
-                    logging.exception(
-                        "takeout invalidated. delete the session.session file and try again."
-                    )
-            else:
-                logging.warning()("could not initiate takeout.")
-                raise TakeoutFailedError()
-        else:
+        self.client = client
+        if not self.config.use_takeout:
             return client
+        for retry in range(3):
+            try:
+                takeout_client: TelegramClient = await client.takeout(
+                    finalize=True).__aenter__()
+            except errors.TakeoutInitDelayError as e:
+                logging.warning(
+                    "please allow the data export request received from Telegram on your device. "
+                    "you can also wait for %s seconds.\n"
+                    "press Enter key after allowing the data export request to continue..",
+                    e.seconds)
+                input()
+                logging.info("trying again.. (%s)", retry + 2)
+            try:
+                # check if the takeout session gets invalidated
+                await takeout_client.get_messages("me")  # default limit=1
+            except errors.TakeoutInvalidError:
+                logging.exception(
+                    'takeout invalidated. delete the session file "%s" and try again.',
+                    self.session_file)
+            return takeout_client
+        logging.error("could not initiate takeout.")
+        raise TakeoutFailedError()
 
-    async def finish_takeout(self) -> None:
-        await self.client.__aexit__(None, None, None)
+    async def __aexit__(self, exc_type: Optional[Type[BaseException]],
+                        exc_value: Optional[BaseException],
+                        traceback: Optional[TracebackType]) -> None:
+        return await self.client.__aexit__(exc_type, exc_value, traceback)
 
     async def _get_messages(
             self,
@@ -326,10 +309,9 @@ class Sync(aobject):
         avatar = None
         if self.config["download_avatars"]:
             try:
-                fname = await self._download_avatar(u)
-                avatar = fname
-            except Exception as e:
-                logging.error("error downloading avatar: #%s: %s", u.id, e)
+                avatar = await self._download_avatar(u)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logging.error("Got %s when downloading avatar %s", e, u.id)
 
         return User(
             id=u.id,
@@ -339,7 +321,7 @@ class Sync(aobject):
             tags=tags,
             avatar=avatar)
 
-    def _make_poll(self, msg: Message) -> None | Media:
+    def _make_poll(self, msg: Message) -> Optional[Media]:
         if not msg.media.results or not msg.media.results.results:
             return None
 
@@ -488,6 +470,6 @@ class Sync(aobject):
                 "the group: %s does not exist,"
                 " or the authorized user is not a participant!", group)
             # This is a critical error, so exit with code: 1
-            exit(1)
+            sys.exit(1)
 
         return entity.id
