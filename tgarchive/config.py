@@ -33,6 +33,7 @@ class Config:  # pylint: disable=too-many-instance-attributes
     avatar_size: bool = True
     download_media: bool = True
     media_dir: pathlib.Path = pathlib.Path("media")
+    thumbnails_subdir: str = "thumbnails"
     media_tmp_dir: pathlib.Path = dataclasses.field(
         default_factory=lambda: pathlib.Path("media") / "tmp")
     media_mime_types: FrozenSet[str] = dataclasses.field(

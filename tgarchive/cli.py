@@ -85,8 +85,8 @@ async def amain() -> None:
         "--path",
         action="store",
         type=pathlib.Path,
-        default="example",
-        help="path to create the site")
+        default=".",
+        help="path to create the site, default is the current directory")
 
     s = p.add_argument_group("sync")
     s.add_argument(

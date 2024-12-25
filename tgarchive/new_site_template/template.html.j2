@@ -168,7 +168,7 @@
 											</a>
 										{% elif m.media.thumb %}
 											<a href="{{ config.media_dir }}/{{ m.media.url }}">
-												<img src="{{ config.media_dir }}/{{ m.media.thumb }}" class="thumb" /><br />
+												<img src="{{ config.media_dir }}/{{ config.thumbnails_subdir }}/{{ m.media.thumb }}" class="thumb" /><br />
 												<span class="filename">{{ m.media.title }}</span>
 											</a>
 										{% else %}

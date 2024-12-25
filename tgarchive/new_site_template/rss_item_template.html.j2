@@ -69,7 +69,7 @@
         {% if media_mime.startswith("image/") %}
         <img src="{{ config.site_url }}/{{ config.media_dir }}/{{ m.media.url }}" alt="{{ m.media.title }}" /><br />
         {% else %}
-        <img src="{{ config.site_url }}/{{ config.media_dir }}/{{ m.media.thumb }}" class="thumb" /><br />
+        <img src="{{ config.site_url }}/{{ config.media_dir }}/{{ config.thumbnails_subdir }}/{{ m.media.thumb }}" class="thumb" /><br />
         {% endif %}
         <span class="filename">{{ m.media.title }}</span>
       </a>

@@ -84,6 +84,7 @@ class Sync(aobject):
     client: TelegramClient
     media_dir: pathlib.Path
     media_tmp_dir: pathlib.Path
+    thumb_dir: pathlib.Path
 
     def __init__(self, *, config: Config, dl_root: pathlib.Path,
                  session_file: pathlib.Path, db: DB) -> None:
@@ -91,13 +92,15 @@ class Sync(aobject):
         self.session_file = session_file
         self.db = db
 
-        media_dir: pathlib.Path
         self.media_dir = media_dir = dl_root / self.config.media_dir
         media_dir.mkdir(parents=True, exist_ok=True)
-        media_tmp_dir: pathlib.Path
+
         self.media_tmp_dir = media_tmp_dir = (
             dl_root / self.config.media_tmp_dir)
         media_tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        self.thumb_dir = thumb_dir = media_dir / self.config.thumbnails_subdir
+        thumb_dir.mkdir(parents=True, exist_ok=True)
 
     async def sync(self,
                    ids: Optional[list[int]] = None,
@@ -421,9 +424,11 @@ class Sync(aobject):
             tpath = await self.client.download_media(
                 msg, file=self.media_tmp_dir, thumb=1)
             t_stem, t_ext = os.path.splitext(os.path.basename(tpath))
-            t_ext = '.thumb' + t_ext
-            tname = f'{msg.id} {t_stem}'[:250-len(t_ext)] + t_ext
-            fmove(tpath, os.path.join(self.media_dir, tname))
+            if len(t_ext) > 6:
+                t_stem = os.path.basename(tpath)
+                t_ext = ''
+            tname = f'thumb_{msg.id} {t_stem}'[:250 - len(t_ext)] + t_ext
+            fmove(tpath, self.media_dir / self.config.thumbnails_subdir / tname)
 
         return DownloadMediaReturn(basename, newname, tname)
 
