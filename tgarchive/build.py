@@ -20,7 +20,8 @@ _NL2BR = re.compile(r"\n\n+")
 
 class Build:
     config: Config
-    template: Template
+    html_template: Template
+    rss_template: Template
     db: DB
     site_path: pathlib.Path
 
@@ -104,14 +105,15 @@ class Build:
                     })
 
         # The last page chronologically is the latest page. Make it index.
+        publish_dir = self.site_path / self.config.publish_dir
         if fname:
-            index_path = pathlib.Path(self.config.publish_dir) / "index.html"
+            index_path = pathlib.Path(publish_dir) / "index.html"
             if index_path.exists():
                 index_path.unlink()
             if self.symlink:
                 index_path.symlink_to(fname)
             else:
-                fname_full = pathlib.Path(self.config.publish_dir) / fname
+                fname_full = pathlib.Path(publish_dir) / fname
                 try:
                     fname_full.hardlink_to(index_path)
                 except OSError:
@@ -121,9 +123,9 @@ class Build:
         if self.config.publish_rss_feed:
             self._build_rss(rss_entries)
 
-    def load_template(self, fname: pathlib.Path) -> None:
+    def load_html_template(self, fname: pathlib.Path) -> None:
         with open(fname, "r") as f:
-            self.template = Template(f.read(), autoescape=True)
+            self.html_template = Template(f.read(), autoescape=True)
 
     def load_rss_template(self, fname) -> None:
         with open(fname, "r") as f:
@@ -134,7 +136,7 @@ class Build:
         return fname
 
     def _render_page(self, fname: Union[str, pathlib.Path], data: dict) -> None:
-        html = self.template.render(
+        html = self.html_template.render(
             config=self.config,
             timeline=self.timeline,
             page_ids=self.page_ids,
@@ -142,9 +144,8 @@ class Build:
             nl2br=self._nl2br,
             **data)
 
-        with open(
-                os.path.join(self.config.publish_dir, fname), "w",
-                encoding="utf8") as f:
+        with (self.site_path / self.config.publish_dir / fname).open(
+                "w", encoding="utf8") as f:
             f.write(html)
 
     def _build_rss(self, messages: Iterable[Message]) -> None:
@@ -166,14 +167,15 @@ class Build:
 
             media_mime = ""
             if m.media and m.media.url:
-                murl = f'{self.config.site_url}/{self.config.media_dir.name}/{m.media.url}'
-                media_path = self.config.media_dir / m.media.url
                 media_mime = "application/octet-stream"
                 media_size = 0
 
-                if "://" in media_path:
+                if "://" in m.media.url:
                     media_mime = "text/html"
+                    murl = m.media.url
                 else:
+                    media_path = self.config.media_dir / m.media.url
+                    murl = f'{self.config.media_dir.name}/{m.media.url}'
                     try:  # pylint: disable=too-many-try-statements
                         media_size = media_path.stat().st_size
                         try:
@@ -187,9 +189,10 @@ class Build:
             e.content(self._make_abstract(m, media_mime), type="html")
 
         f.rss_file(
-            os.path.join(self.config.publish_dir, "index.xml"), pretty=True)
+            self.site_path / self.config.publish_dir / "index.xml", pretty=True)
         f.atom_file(
-            os.path.join(self.config.publish_dir, "index.atom"), pretty=True)
+            self.site_path / self.config.publish_dir / "index.atom",
+            pretty=True)
 
     def _make_abstract(self, m: Message, media_mime: str) -> str:
         if self.rss_template:
@@ -209,27 +212,27 @@ class Build:
             There has to be a \n before <br> so as to not break
             Jinja's automatic hyperlinking of URLs.
         """
-        return _NL2BR.sub("\n\n", s).replace("\n", "\n<br />")
+        return '' if not s else _NL2BR.sub("\n\n", s).replace("\n", "\n<br />")
 
     def _create_publish_dir(self) -> None:
-        pubdir = self.site_path / self.config.publish_dir
+        publish_dir = self.site_path / self.config.publish_dir
 
         # Clear the output directory.
-        if os.path.exists(pubdir):
-            shutil.rmtree(pubdir)
+        if os.path.exists(publish_dir):
+            shutil.rmtree(publish_dir)
 
         # Re-create the output directory.
-        os.mkdir(pubdir)
+        os.mkdir(publish_dir)
 
         # Copy the static directory into the output directory.
-        f = self.site_path / self.config.static_dir
-        target = pubdir / f.name
+        static_dir_src = self.site_path / self.config.static_dir
+        target = publish_dir / static_dir_src.name
         if self.symlink:
-            self._relative_symlink(os.path.abspath(f), target)
-        elif os.path.isfile(f):
-            shutil.copyfile(f, target)
+            self._relative_symlink(os.path.abspath(static_dir_src), target)
+        elif os.path.isfile(static_dir_src):
+            shutil.copyfile(static_dir_src, target)
         else:
-            shutil.copytree(f, target)
+            shutil.copytree(static_dir_src, target)
 
         # If media downloading is enabled, copy/symlink the media directory.
         mediadir = self.site_path / self.config.media_dir
@@ -237,10 +240,11 @@ class Build:
             if self.symlink:
                 self._relative_symlink(
                     os.path.abspath(mediadir),
-                    os.path.join(pubdir, os.path.basename(mediadir)))
+                    os.path.join(publish_dir, os.path.basename(mediadir)))
             else:
                 shutil.copytree(
-                    mediadir, os.path.join(pubdir, os.path.basename(mediadir)))
+                    mediadir,
+                    os.path.join(publish_dir, os.path.basename(mediadir)))
 
     def _relative_symlink(self, src, dst) -> None:
         dir_path = os.path.dirname(dst)

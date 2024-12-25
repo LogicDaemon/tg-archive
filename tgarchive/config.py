@@ -52,8 +52,7 @@ class Config:  # pylint: disable=too-many-instance-attributes
     rss_feed_entries: int = 100
     publish_dir: str = "site"
     site_url: str = "https://localhost"
-    static_dir: pathlib.Path = pathlib.Path("static")
-    telegram_url: str = "https://t.me/{id}"
+    static_dir: str = "static"
     per_page: int = 1000
     show_day_index: bool = False
     show_sender_fullname: bool = False
@@ -62,6 +61,8 @@ class Config:  # pylint: disable=too-many-instance-attributes
     site_description: str = "Public archive of @{group} Telegram messages."
     meta_description: str = "@{group} {date} Telegram message archive."
     page_title: str = "{date} - @{group} Telegram message archive."
+    html_template: str = "template.html.j2"
+    rss_template: str = "rss_item_template.html.j2"
 
     def __init__(self, **kwargs) -> None:
         super(Config, self).__init__()

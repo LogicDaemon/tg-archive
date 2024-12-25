@@ -96,7 +96,9 @@ class DB:
     conn: sqlite3.Connection
     tz: Optional[pytz.tzinfo.BaseTzInfo]
 
-    def __init__(self, dbfile: Union[pathlib.Path, str], tz: Optional[str] = None) -> None:
+    def __init__(self,
+                 dbfile: Union[pathlib.Path, str],
+                 tz: Optional[str] = None) -> None:
         self.tz = pytz.timezone(tz) if tz else None
 
         # Initialize the SQLite DB. If it's new, create the table schema.
@@ -128,8 +130,8 @@ class DB:
         if not res:
             return 0, None
 
-        id, date = res
-        return id, date
+        # id, date = res
+        return res
 
     def get_timeline(self) -> Iterator[Month]:
         """ Get the list of all unique yyyy-mm month groups and
@@ -256,7 +258,7 @@ class DB:
 
     def _make_message(self, r: tuple) -> Message:
         """ Makes a Message() object from an SQL result tuple """
-        id, typ, date, edit_date, content, reply_to, \
+        m_id, typ, date, edit_date, content, reply_to, \
             user_id, username, first_name, last_name, tags, avatar, \
             media_id, media_type, media_url, media_title, media_description, media_thumb = r
 
@@ -282,7 +284,7 @@ class DB:
             edit_date = edit_date.astimezone(self.tz) if edit_date else None
 
         return Message(
-            id=id,
+            id=m_id,
             type=typ,
             date=date,
             edit_date=edit_date,

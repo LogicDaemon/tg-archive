@@ -40,7 +40,7 @@
 				<div class="logo">
 					<a href="{{ config.site_url }}"><img src="static/logo.svg" alt="" /></a>
 					<p class="desc">
-						<a href="{{ config.telegram_url.format(id=config.group) }}" rel="noreferer nopener nofollow">@{{ config.group }}</a> /
+						<a href="https://t.me/{{ config.group }}" rel="noreferer nopener nofollow">@{{ config.group }}</a> /
 						{{ config.site_description.format(group=config.group, date=config.date) }}
 					</p>
 				</div>
@@ -99,7 +99,7 @@
 
 						<div class="body">
 							<div class="meta">
-								<a href="{{ config.telegram_url.format(id=m.user.username) }}" class="username" rel="noreferer nopener nofollow">
+								<a href="https://t.me/{{ m.user.username }}/{{ m.id }}" class="username" rel="noreferer nopener nofollow">
 									{% if config.show_sender_fullname %}
 										{{ m.user.first_name }} {{ m.user.last_name }} (@{{ m.user.username }})
 									{% else %}
@@ -123,7 +123,7 @@
 							</div>
 							<div class="text">
 								{% if m.type == "message" %}
-									{{ nl2br(m.content | escape) | safe | urlize }}
+									{{ nl2br(m.content | escape) | safe }}
 								{% else %}
 									{% if m.type == "user_joined" %}
 										Joined.
@@ -161,7 +161,7 @@
 											<video controls>
 												<source src="{{ config.media_dir }}/{{ m.media.url }}">
 											</video>
-											<p><a href="{{ config.media_dir }}/{{ m.media.url }}">{{ m.media.title }}</a></p>
+											<p><a href="{{ config.media_dir }}/{{ m.media.url }}"><span class="filename">{{ m.media.title }}</span></a></p>
 										{% elif ext in ['webp'] %}
 											<a href="{{ config.media_dir }}/{{ m.media.url }}">
 												<img src="{{ config.media_dir }}/{{ m.media.url }}" class="media-webp" />
@@ -172,10 +172,10 @@
 												<span class="filename">{{ m.media.title }}</span>
 											</a>
 										{% else %}
-											<a href="{{ config.media_dir }}/{{ m.media.url }}">{{ m.media.title }}</a>
+											<a href="{{ config.media_dir }}/{{ m.media.url }}"><span class="filename">{{ m.media.title }}</span></a>
 										{% endif %}
 									{% else %}
-										<a href="{{ config.media_dir }}/{{ m.media.url }}">{{ m.media.title }}</a>
+										<a href="{{ config.media_dir }}/{{ m.media.url }}"><span class="filename">{{ m.media.title }}</span></a>
 									{% endif %}
 								</div>
 							{% endif %}

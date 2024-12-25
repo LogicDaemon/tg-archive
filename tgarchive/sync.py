@@ -372,8 +372,7 @@ class Sync(aobject):
                 if self.config.media_mime_types:
                     if hasattr(msg, "file") and hasattr(
                             msg.file, "mime_type") and msg.file.mime_type:
-                        if msg.file.mime_type not in self.config[
-                                "media_mime_types"]:
+                        if msg.file.mime_type not in self.config.media_mime_types:
                             log.info("skipping media #%s / %s", msg.file.name,
                                      msg.file.mime_type)
                             return
@@ -421,7 +420,9 @@ class Sync(aobject):
         if isinstance(msg.media, telethon.tl.types.MessageMediaPhoto):
             tpath = await self.client.download_media(
                 msg, file=self.media_tmp_dir, thumb=1)
-            tname = os.path.basename(tpath)
+            t_stem, t_ext = os.path.splitext(os.path.basename(tpath))
+            t_ext = '.thumb' + t_ext
+            tname = f'{msg.id} {t_stem}'[:250-len(t_ext)] + t_ext
             fmove(tpath, os.path.join(self.media_dir, tname))
 
         return DownloadMediaReturn(basename, newname, tname)

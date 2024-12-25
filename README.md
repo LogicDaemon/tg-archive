@@ -39,7 +39,7 @@ tg-archive uses the [Telethon](https://github.com/LonamiWebs/Telethon) Telegram 
 1. `tg-archive --build` (builds the static site into the `site` directory, which can be published)
 
 ### Customization
-Edit the generated `template.html` and static assets in the `./static` directory to customize the site.
+Edit the generated `template.html.j2` and static assets in the `./static` directory to customize the site.
 
 ### Note
 - The sync can be stopped (Ctrl+C) any time to be resumed later.

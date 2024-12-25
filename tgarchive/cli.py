@@ -30,6 +30,14 @@ def default_session_file() -> str:
     return os.path.join(secret_data_dir, default_filename)
 
 
+def site_template_dir() -> pathlib.Path:
+    site_template = pathlib.Path(__file__).parent / 'new_site_template'
+    if not os.path.isdir(site_template):
+        logging.error("unable to find bundled new_site_template directory")
+        sys.exit(1)
+    return site_template
+
+
 async def amain() -> None:
     """ Run the CLI """
     # pylint: disable=import-outside-toplevel
@@ -43,7 +51,6 @@ async def amain() -> None:
         action="store",
         type=pathlib.Path,
         default="config.yaml",
-        dest="config",
         help="path to the config file")
     p.add_argument(
         "-d",
@@ -51,7 +58,6 @@ async def amain() -> None:
         action="store",
         type=pathlib.Path,
         default=os.path.join(app_data_dir(), "data.sqlite"),
-        dest="data",
         help='path to the SQLite data file to store messages, default is "{default}"'
     )
     p.add_argument(
@@ -66,7 +72,6 @@ async def amain() -> None:
         "-V",
         "--version",
         action=argparse.BooleanOptionalAction,
-        dest="version",
         help="display version")
 
     n = p.add_argument_group("new")
@@ -74,7 +79,6 @@ async def amain() -> None:
         "-n",
         "--new",
         action=argparse.BooleanOptionalAction,
-        dest="new",
         help="initialize a new site")
     n.add_argument(
         "-p",
@@ -82,7 +86,6 @@ async def amain() -> None:
         action="store",
         type=pathlib.Path,
         default="example",
-        dest="path",
         help="path to create the site")
 
     s = p.add_argument_group("sync")
@@ -90,7 +93,6 @@ async def amain() -> None:
         "-s",
         "--sync",
         action=argparse.BooleanOptionalAction,
-        dest="sync",
         help="sync data from telegram group to the local DB")
     s.add_argument(
         "-id",
@@ -98,42 +100,36 @@ async def amain() -> None:
         action="store",
         type=int,
         nargs="+",
-        dest="id",
         help="sync (or update) messages for given ids")
     s.add_argument(
         "-from-id",
         "--from-id",
         action="store",
         type=int,
-        dest="from_id",
         help="sync (or update) messages from this id to the latest")
 
-    b = p.add_argument_group("build")
-    b.add_argument(
+    build = p.add_argument_group("build")
+    build.add_argument(
         "-b",
         "--build",
         action=argparse.BooleanOptionalAction,
-        dest="build",
         help="build the static site")
-    b.add_argument(
+    build.add_argument(
         "-t",
-        "--template",
+        "--html-template",
         action="store",
         type=pathlib.Path,
-        default="template.html",
-        dest="template",
-        help="path to the template file")
-    b.add_argument(
+        default=None,
+        help="html template file, overrides the config")
+    build.add_argument(
         "--rss-template",
         action="store",
         type=pathlib.Path,
         default=None,
-        dest="rss_template",
-        help="path to the rss template file")
-    b.add_argument(
+        help="rss template file, overrides the config")
+    build.add_argument(
         "--symlink",
         action=argparse.BooleanOptionalAction,
-        dest="symlink",
         help="symlink media and other static files instead of copying")
     p.add_argument(
         "--verbose",
@@ -156,17 +152,12 @@ async def amain() -> None:
 
     # Setup new site.
     if args.new:
-        exdir = os.path.join(os.path.dirname(__file__), "example")
-        if not os.path.isdir(exdir):
-            logging.error("unable to find bundled example directory")
-            sys.exit(1)
-
         if (args.path / "config.yaml").is_file():
             logging.error("site already exists at '%s'", args.path)
             sys.exit(1)
 
         logging.info("creating new site at '%s'", args.path)
-        shutil.copytree(exdir, args.path, dirs_exist_ok=True)
+        shutil.copytree(site_template_dir(), args.path, dirs_exist_ok=True)
 
         logging.info("created directory '%s'", args.path)
 
@@ -221,12 +212,30 @@ async def amain() -> None:
         from .build import Build
 
         logging.info("building site")
-        b = Build(config, DB(args.data, config.timezone), args.symlink,
-                  args.path)
-        b.load_template(args.path / args.template)
-        if args.rss_template:
-            b.load_rss_template(args.path / args.rss_template)
-        b.build()
+        build = Build(config, DB(args.data, config.timezone), args.symlink,
+                      args.path)
+        if args.html_template is not None:
+            config.html_template = args.html_template
+        if args.rss_template is not None:
+            config.rss_template = args.rss_template
+
+        for tmpl_name, tmpl_func in [
+            (config.html_template, build.load_html_template),
+            (config.rss_template, build.load_rss_template),
+        ]:
+            if not tmpl_name:
+                continue
+            for base_dir_generator in [lambda: args.path, site_template_dir]:
+                template: pathlib.Path = base_dir_generator() / tmpl_name
+                if template.is_file():
+                    tmpl_func(template)
+                    break
+                else:
+                    logging.warning("No template file at '%s'", template)
+            else:
+                logging.error('Failed to load %s', tmpl_name)
+
+        build.build()
 
         logging.info('published to directory "%s"', config.publish_dir)
 
