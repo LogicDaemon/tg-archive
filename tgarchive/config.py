@@ -63,6 +63,7 @@ class Config:  # pylint: disable=too-many-instance-attributes
     page_title: str = "{date} - @{group} Telegram message archive."
     html_template: str = "template.html.j2"
     rss_template: str = "rss_item_template.html.j2"
+    db_path: str = "data.sqlite"
 
     def __init__(self, **kwargs) -> None:
         super(Config, self).__init__()

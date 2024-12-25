@@ -57,9 +57,9 @@ async def amain() -> None:
         "--data",
         action="store",
         type=pathlib.Path,
-        default=os.path.join(app_data_dir(), "data.sqlite"),
-        help='path to the SQLite data file to store messages, default is "{default}"'
-    )
+        default=None,
+        help='path to the SQLite data file to store messages, '
+        'overrides the db_path value in config.')
     p.add_argument(
         "-se",
         "--session",
@@ -146,20 +146,20 @@ async def amain() -> None:
         return
 
     logging.basicConfig(
-        format="%(asctime)s: %(message)s",
+        format='%(asctime)s: %(message)s',
         level=logging.DEBUG
         if args.verbose or os.getenv('DEBUG') else logging.INFO)
 
     # Setup new site.
     if args.new:
         if (args.path / "config.yaml").is_file():
-            logging.error("site already exists at '%s'", args.path)
+            logging.error('site already exists at "%s"', args.path)
             sys.exit(1)
 
-        logging.info("creating new site at '%s'", args.path)
+        logging.info('creating new site at "%s"', args.path)
         shutil.copytree(site_template_dir(), args.path, dirs_exist_ok=True)
 
-        logging.info("created directory '%s'", args.path)
+        logging.info('created directory "%s"', args.path)
 
         # make sure the directories are writable
         base_mode = os.stat(args.path).st_mode & 0o777
@@ -172,7 +172,7 @@ async def amain() -> None:
                 for f in filenames:
                     if os.stat(f).st_mode & 0o600 != 0o600:
                         os.chmod(f, 0o600 | base_mode)
-        log.info("site created, please edit the config file")
+        log.info('site created, please edit the config file')
         return
 
     from .config import get_config
@@ -182,24 +182,26 @@ async def amain() -> None:
         config_path = args.path / config_path
     config = get_config(config_path)
 
+    db_path = args.path / (args.data or config.db_path)
+
     # Sync from Telegram.
     if args.sync:
         # Import because the Telegram client import is quite heavy.
         from .sync import Sync
 
         if args.id and args.from_id and args.from_id > 0:
-            logging.error("pass either --id or --from-id but not both")
+            logging.error('pass either --id or --from-id but not both')
             sys.exit(1)
 
         logging.info(
-            "starting Telegram sync (batch_size=%s, limit=%s, wait=%s, mode=%s)",
-            config.fetch_batch_size, config.fetch_limit, config.fetch_wait,
-            "takeout" if config.use_takeout else "standard")
+            'starting Telegram sync (takeout=%s, limit=%s, batch_size=%s, wait=%s)',
+            config.use_takeout, config.fetch_batch_size, config.fetch_limit,
+            config.fetch_wait)
         s = await Sync(
             config=config,
             dl_root=args.path,
             session_file=args.session,
-            db=DB(args.data))
+            db=DB(db_path))
         async with s:
             try:
                 await s.sync(args.id, args.from_id)
@@ -212,7 +214,7 @@ async def amain() -> None:
         from .build import Build
 
         logging.info("building site")
-        build = Build(config, DB(args.data, config.timezone), args.symlink,
+        build = Build(config, DB(db_path, config.timezone), args.symlink,
                       args.path)
         if args.html_template is not None:
             config.html_template = args.html_template
@@ -230,8 +232,7 @@ async def amain() -> None:
                 if template.is_file():
                     tmpl_func(template)
                     break
-                else:
-                    logging.warning("No template file at '%s'", template)
+                logging.warning("No template file at '%s'", template)
             else:
                 logging.error('Failed to load %s', tmpl_name)
 
