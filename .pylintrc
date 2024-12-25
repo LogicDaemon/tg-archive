@@ -134,6 +134,7 @@ disable=W1514,unspecified-encoding, # using default system encoding is a good id
         W0621,redefined-outer-name, # pytest fixtures
         W1203,logging-fstring-interpolation,
         R2004,magic-value-comparison,
+        E0402,relative-beyond-top-level,
 
 # Enable the message, report, category or checker with the given id(s). You can
 # either give multiple identifier separated by comma (,) or put this option

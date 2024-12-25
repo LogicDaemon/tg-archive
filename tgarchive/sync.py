@@ -1,6 +1,7 @@
 """ Receive messages from the Telegram group to the local DB """
 import atexit
 import glob
+import itertools
 import json
 import logging
 import os
@@ -44,7 +45,7 @@ def moving_thread_fn() -> None:
             if exit_signaled:
                 break
         shutil.move(src, dest)
-        logging.info('moved "%s" -> "%s"', src, dest)
+        log.info('moved "%s" -> "%s"', src, dest)
 
 
 moving_thread = threading.Thread(target=moving_thread_fn, daemon=True)
@@ -55,7 +56,7 @@ def finish_moving_thread() -> None:
     global exit_signaled
     exit_signaled = True
     if moving_thread.is_alive():
-        logging.info("waiting for moving thread to finish..")
+        log.info("waiting for moving thread to finish..")
         move_event.set()
         moving_thread.join()
 
@@ -91,11 +92,11 @@ class Sync(aobject):
         self.db = db
 
         media_dir: pathlib.Path
-        self.media_dir = media_dir = dl_root / self.config["media_dir"]
+        self.media_dir = media_dir = dl_root / self.config.media_dir
         media_dir.mkdir(parents=True, exist_ok=True)
         media_tmp_dir: pathlib.Path
-        self.media_tmp_dir = media_tmp_dir = dl_root / self.config[
-            "media_tmp_dir"]
+        self.media_tmp_dir = media_tmp_dir = (
+            dl_root / self.config.media_tmp_dir)
         media_tmp_dir.mkdir(parents=True, exist_ok=True)
 
     async def sync(self,
@@ -107,26 +108,28 @@ class Sync(aobject):
 
         if ids:
             last_id, last_date = (ids, None)
-            logging.info('fetching message id=%s', ids)
+            log.info('fetching message id=%s', ids)
         elif from_id:
             last_id, last_date = (from_id, None)
-            logging.info('fetching from last message id=%s', last_id)
+            log.info('fetching from last message id=%s', last_id)
         else:
             last_id, last_date = self.db.get_last_message_id()
-            logging.info('fetching from last message id=%s (%s)', last_id,
-                         last_date)
+            log.info('fetching from last message id=%s (%s)', last_id,
+                     last_date)
 
-        group_id = await self._get_group_id(self.config["group"])
+        group_id = await self._get_group_id(self.config.group)
 
+        fetch_limit = self.config.fetch_limit
+        wait_s = self.config.fetch_wait
+        m_counter = (
+            iter(range(1, fetch_limit)) if fetch_limit else itertools.count())
         n = 0
         while True:
-            has = False
+            m: Optional[Message] = None
             async for m in self._get_messages(
                     group_id, offset_id=last_id, ids=ids):
                 if not m:
                     continue
-
-                has = True
 
                 # Insert the records into DB.
                 self.db.insert_user(m.user)
@@ -137,30 +140,33 @@ class Sync(aobject):
                 self.db.insert_message(m)
 
                 last_date = m.date
-                n += 1
-                if n % 300 == 0:
-                    logging.info("fetched %s messages", n)
-                    self.db.commit()
 
-                if 0 < self.config["fetch_limit"] <= n or ids:
-                    has = False
+                try:
+                    n = next(m_counter)
+                except StopIteration:
+                    log.info("reached the fetch limit (%s)", fetch_limit)
+                    # If m is not None, the cycle will repear after a sleep.
+                    m = None
                     break
 
+                if n % 300 == 0:
+                    log.info("fetched %s messages", n)
+                    self.db.commit()
+
             self.db.commit()
-            if has:
-                last_id = m.id
-                wait_s = self.config["fetch_wait"]
-                logging.info("fetched %s messages. sleeping for %s seconds", n,
-                             wait_s)
-                time.sleep(wait_s)
-            else:
+            if m is None:
+                log.info("fetched %s messages. last message date: %s", n,
+                         last_date)
                 break
+            last_id = m.id
+            log.info("fetched %s messages. sleeping for %s seconds", n, wait_s)
+            time.sleep(wait_s)
 
         self.db.commit()
-        if self.config.get("use_takeout", False):
+        if self.config.use_takeout:
             await self.finish_takeout()
-        logging.info("finished. fetched %s messages. last message = %s", n,
-                     last_date)
+        log.info("finished. fetched %s messages. last message = %s", n,
+                 last_date)
 
     async def __aenter__(self) -> TelegramClient:
         base_logger = logging.getLogger("telethon")
@@ -181,22 +187,22 @@ class Sync(aobject):
                 takeout_client: TelegramClient = await client.takeout(
                     finalize=True).__aenter__()
             except errors.TakeoutInitDelayError as e:
-                logging.warning(
+                log.warning(
                     "please allow the data export request received from Telegram on your device. "
                     "you can also wait for %s seconds.\n"
                     "press Enter key after allowing the data export request to continue..",
                     e.seconds)
                 input()
-                logging.info("trying again.. (%s)", retry + 2)
+                log.info("trying again.. (%s)", retry + 2)
             try:
                 # check if the takeout session gets invalidated
                 await takeout_client.get_messages("me")  # default limit=1
             except errors.TakeoutInvalidError:
-                logging.exception(
+                log.exception(
                     'takeout invalidated. delete the session file "%s" and try again.',
                     self.session_file)
             return takeout_client
-        logging.error("could not initiate takeout.")
+        log.error("could not initiate takeout.")
         raise TakeoutFailedError()
 
     async def __aexit__(self, exc_type: Optional[Type[BaseException]],
@@ -269,14 +275,14 @@ class Sync(aobject):
             return await self.client.get_messages(
                 group,
                 offset_id=offset_id,
-                limit=self.config["fetch_batch_size"],
-                wait_time=0 if self.config.get("use_takeout", False) else None,
+                limit=self.config.fetch_batch_size,
+                wait_time=0 if self.config.use_takeout else None,
                 reverse=True,
                 **({
                     ids: ids,
                 } if ids else {}))
         except errors.FloodWaitError as e:
-            logging.info("flood waited: have to wait %s seconds", e.seconds)
+            log.info("flood waited: have to wait %s seconds", e.seconds)
 
     async def _get_user(
         self, u: Union[telethon.tl.types.ChannelForbidden,
@@ -307,11 +313,11 @@ class Sync(aobject):
 
         # Download sender's profile photo if it's not already cached.
         avatar = None
-        if self.config["download_avatars"]:
+        if self.config.download_avatars:
             try:
                 avatar = await self._download_avatar(u)
             except Exception as e:  # pylint: disable=broad-exception-caught
-                logging.error("Got %s when downloading avatar %s", e, u.id)
+                log.error("Got %s when downloading avatar %s", e, u.id)
 
         return User(
             id=u.id,
@@ -361,18 +367,18 @@ class Sync(aobject):
         elif isinstance(msg.media, telethon.tl.types.MessageMediaPhoto) or \
                 isinstance(msg.media, telethon.tl.types.MessageMediaDocument) or \
                 isinstance(msg.media, telethon.tl.types.MessageMediaContact):
-            if self.config["download_media"]:
+            if self.config.download_media:
                 # Filter by extensions?
-                if self.config["media_mime_types"]:
+                if self.config.media_mime_types:
                     if hasattr(msg, "file") and hasattr(
                             msg.file, "mime_type") and msg.file.mime_type:
                         if msg.file.mime_type not in self.config[
                                 "media_mime_types"]:
-                            logging.info("skipping media #%s / %s",
-                                         msg.file.name, msg.file.mime_type)
+                            log.info("skipping media #%s / %s", msg.file.name,
+                                     msg.file.mime_type)
                             return
 
-                logging.info("downloading media #%s", msg.id)
+                log.info("downloading media #%s", msg.id)
                 basename, fname, thumb = await self._download_media(msg)
                 return Media(
                     id=msg.id,
@@ -391,13 +397,13 @@ class Sync(aobject):
         # filename before the download.
         error_sleep_s = 60
         while True:
-            try:
-                fpath = await self.client.download_media(
-                    msg, file=self.media_tmp_dir)
+            try:  # pylint: disable=too-many-try-statements
+                fpath = pathlib.Path(await self.client.download_media(
+                    msg, file=self.media_tmp_dir))
                 break
             except ValueError:
-                logging.error("error downloading media #%s. Sleeping %ss",
-                              msg.id, error_sleep_s)
+                log.error("error downloading media #%s. Sleeping %ss", msg.id,
+                          error_sleep_s)
                 time.sleep(error_sleep_s)
                 error_sleep_s *= 2
 
@@ -427,15 +433,13 @@ class Sync(aobject):
         for existing in glob.iglob(fpath_prefix + '*'):
             return os.path.basename(existing)
 
-        logging.info('downloading avatar #%s', user.id)
+        log.info('downloading avatar #%s', user.id)
 
         # Download the file into a container, resize it, and then write to disk.
         profile_photo = await self.client.download_profile_photo(
-            user,
-            file=self.media_tmp_dir,
-            download_big=self.config["avatar_size"])
+            user, file=self.media_tmp_dir, download_big=self.config.avatar_size)
         if profile_photo is None:
-            logging.info("user has no avatar #%s", user.id)
+            log.info("user has no avatar #%s", user.id)
             return None
         fpath = fpath_prefix + os.path.basename(profile_photo)
         fmove(profile_photo, fpath)
@@ -443,11 +447,10 @@ class Sync(aobject):
         return os.path.basename(fpath)
 
     async def _get_group_id(self, group: Union[str, int]) -> int:
-        """
-        Syncs the Entity cache and returns the Entity ID for the specified group,
-        which can be a str/int for group ID, group name, or a group username.
+        """ Syncs the Entity cache and returns the Entity ID for the specified group,
+            which can be a str/int for group ID, group name, or a group username.
 
-        The authorized user must be a part of the group.
+            The authorized user must be a part of the group.
         """
         # Get all dialogs for the authorized user, which also
         # syncs the entity cache to get latest entities
@@ -466,7 +469,7 @@ class Sync(aobject):
             entity = await self.client.get_entity(group)
 
         except ValueError:
-            logging.critical(
+            log.critical(
                 "the group: %s does not exist,"
                 " or the authorized user is not a participant!", group)
             # This is a critical error, so exit with code: 1

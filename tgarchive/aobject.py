@@ -5,10 +5,10 @@ from typing import Self
 
 
 class aobject:
-    ''' Inheriting this class allows you to define an async _init.
+    """ Inheriting this class allows you to define an async _init.
 
     So you can create objects by doing something like `await MyClass(params)`
-    '''
+    """
     __slots__ = ()
 
     async def __new__(cls, *a, **kw) -> Self:

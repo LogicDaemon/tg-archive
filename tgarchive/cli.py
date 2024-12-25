@@ -32,6 +32,7 @@ def default_session_file() -> str:
 
 async def amain() -> None:
     """ Run the CLI """
+    # pylint: disable=import-outside-toplevel
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -173,7 +174,7 @@ async def amain() -> None:
         base_mode = os.stat(args.path).st_mode & 0o777
         if base_mode & 0o700 != 0o700:
             os.chmod(args.path, base_mode | 0o700)
-            for root, dirnames, filenames in os.walk(args.path):
+            for root, dirnames, filenames in os.walk(args.path):  # pylint: disable=unused-variable
                 for d in dirnames:
                     if os.stat(d).st_mode & 0o700 != 0o700:
                         os.chmod(d, 0o700 | base_mode)
@@ -203,11 +204,12 @@ async def amain() -> None:
             "starting Telegram sync (batch_size=%s, limit=%s, wait=%s, mode=%s)",
             config.fetch_batch_size, config.fetch_limit, config.fetch_wait,
             "takeout" if config.use_takeout else "standard")
-        async with Sync(
-                config=config,
-                dl_root=args.path,
-                session_file=args.session,
-                db=DB(args.data)) as s:
+        s = await Sync(
+            config=config,
+            dl_root=args.path,
+            session_file=args.session,
+            db=DB(args.data))
+        async with s:
             try:
                 await s.sync(args.id, args.from_id)
             except KeyboardInterrupt:
@@ -219,11 +221,11 @@ async def amain() -> None:
         from .build import Build
 
         logging.info("building site")
-        config = get_config(args.config)
-        b = Build(config, DB(args.data, config.timezone), args.symlink)
-        b.load_template(args.template)
+        b = Build(config, DB(args.data, config.timezone), args.symlink,
+                  args.path)
+        b.load_template(args.path / args.template)
         if args.rss_template:
-            b.load_rss_template(args.rss_template)
+            b.load_rss_template(args.path / args.rss_template)
         b.build()
 
         logging.info('published to directory "%s"', config.publish_dir)

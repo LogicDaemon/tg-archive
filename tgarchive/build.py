@@ -5,7 +5,7 @@ import pathlib
 import re
 import shutil
 from collections import deque
-from typing import Deque, Iterable
+from typing import Deque, Iterable, Union
 
 import magic
 import pkg_resources
@@ -22,11 +22,14 @@ class Build:
     config: Config
     template: Template
     db: DB
+    site_path: pathlib.Path
 
-    def __init__(self, config: Config, db: DB, symlink: bool) -> None:
+    def __init__(self, config: Config, db: DB, symlink: bool,
+                 site_path: pathlib.Path) -> None:
         self.config = config
         self.db = db
         self.symlink = symlink
+        self.site_path = site_path
 
         self.rss_template: Template = None
 
@@ -65,7 +68,8 @@ class Build:
             page = 0
             last_id = 0
             total = self.db.get_message_count(month.date.year, month.date.month)
-            total_pages = -(-total // per_page)  # faster math.ceil without import
+            total_pages = -(-total // per_page
+                           )  # faster math.ceil without import
 
             while True:
                 messages = list(
@@ -88,8 +92,16 @@ class Build:
                 if self.config.publish_rss_feed:
                     rss_entries.extend(messages)
 
-                self._render_page(messages, month, dayline, fname, page,
-                                  total_pages)
+                self._render_page(
+                    fname, {
+                        'messages': messages,
+                        'month': month,
+                        'dayline': dayline,
+                        'pagination': {
+                            "current": page,
+                            "total": total_pages
+                        },
+                    })
 
         # The last page chronologically is the latest page. Make it index.
         if fname:
@@ -107,9 +119,9 @@ class Build:
 
         # Generate RSS feeds.
         if self.config.publish_rss_feed:
-            self._build_rss(rss_entries, "index.rss", "index.atom")
+            self._build_rss(rss_entries)
 
-    def load_template(self, fname) -> None:
+    def load_template(self, fname: pathlib.Path) -> None:
         with open(fname, "r") as f:
             self.template = Template(f.read(), autoescape=True)
 
@@ -121,30 +133,21 @@ class Build:
         fname = f'{month.slug}{"_" + str(page) if page > 1 else ""}.html'
         return fname
 
-    def _render_page(self, messages, month, dayline, fname, page,
-                     total_pages) -> None:
+    def _render_page(self, fname: Union[str, pathlib.Path], data: dict) -> None:
         html = self.template.render(
             config=self.config,
             timeline=self.timeline,
-            dayline=dayline,
-            month=month,
-            messages=messages,
             page_ids=self.page_ids,
-            pagination={
-                "current": page,
-                "total": total_pages
-            },
             make_filename=self.make_filename,
-            nl2br=self._nl2br)
+            nl2br=self._nl2br,
+            **data)
 
         with open(
-                os.path.join(self.config.publish_dir, fname),
-                "w",
+                os.path.join(self.config.publish_dir, fname), "w",
                 encoding="utf8") as f:
             f.write(html)
 
-    def _build_rss(self, messages: Iterable[Message], rss_file: str,
-                   atom_file: str) -> None:
+    def _build_rss(self, messages: Iterable[Message]) -> None:
         f = FeedGenerator()
         f.id(self.config.site_url)
         f.generator("tg-archive " +
@@ -171,11 +174,11 @@ class Build:
                 if "://" in media_path:
                     media_mime = "text/html"
                 else:
-                    try:
+                    try:  # pylint: disable=too-many-try-statements
                         media_size = media_path.stat().st_size
                         try:
                             media_mime = magic.from_file(media_path, mime=True)
-                        except Exception:
+                        except Exception:  # pylint: disable=broad-exception-caught
                             pass
                     except FileNotFoundError:
                         pass
@@ -209,7 +212,7 @@ class Build:
         return _NL2BR.sub("\n\n", s).replace("\n", "\n<br />")
 
     def _create_publish_dir(self) -> None:
-        pubdir = self.config.publish_dir
+        pubdir = self.site_path / self.config.publish_dir
 
         # Clear the output directory.
         if os.path.exists(pubdir):
@@ -219,17 +222,17 @@ class Build:
         os.mkdir(pubdir)
 
         # Copy the static directory into the output directory.
-        for f in [self.config.static_dir]:
-            target = os.path.join(pubdir, f)
-            if self.symlink:
-                self._relative_symlink(os.path.abspath(f), target)
-            elif os.path.isfile(f):
-                shutil.copyfile(f, target)
-            else:
-                shutil.copytree(f, target)
+        f = self.site_path / self.config.static_dir
+        target = pubdir / f.name
+        if self.symlink:
+            self._relative_symlink(os.path.abspath(f), target)
+        elif os.path.isfile(f):
+            shutil.copyfile(f, target)
+        else:
+            shutil.copytree(f, target)
 
         # If media downloading is enabled, copy/symlink the media directory.
-        mediadir = self.config.media_dir
+        mediadir = self.site_path / self.config.media_dir
         if os.path.exists(mediadir):
             if self.symlink:
                 self._relative_symlink(
