@@ -1,24 +1,28 @@
 """ A tool for exporting and archiving Telegram groups to webpages """
+from __future__ import annotations, generator_stop
 
+# Python Standard Library modules https://docs.python.org/3/py-modindex.html
 import argparse
 import asyncio
 import logging
 import os
-import pathlib
 import shutil
 import sys
+from pathlib import Path
 
-import appdirs
+# Installable modules https://pypi.org/
+import platformdirs  # platformdirs
 
+# Local modules
 from .db import DB
 from .meta import __version__, program_name
 
 log = logging.getLogger(
-    os.path.basename(__file__) if __name__ == '__main__' else __name__)
+    Path(__file__).stem if __name__ == '__main__' else __name__)
 
 
 def app_data_dir() -> str:
-    d = appdirs.user_data_dir(program_name)
+    d = platformdirs.user_data_dir(program_name)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -30,8 +34,8 @@ def default_session_file() -> str:
     return os.path.join(secret_data_dir, default_filename)
 
 
-def site_template_dir() -> pathlib.Path:
-    site_template = pathlib.Path(__file__).parent / 'new_site_template'
+def site_template_dir() -> Path:
+    site_template = Path(__file__).parent / 'new_site_template'
     if not os.path.isdir(site_template):
         logging.error("unable to find bundled new_site_template directory")
         sys.exit(1)
@@ -49,14 +53,14 @@ async def amain() -> None:
         "-c",
         "--config",
         action="store",
-        type=pathlib.Path,
+        type=Path,
         default="config.yaml",
         help="path to the config file")
     p.add_argument(
         "-d",
         "--data",
         action="store",
-        type=pathlib.Path,
+        type=Path,
         default=None,
         help='path to the SQLite data file to store messages, '
         'overrides the db_path value in config.')
@@ -64,7 +68,7 @@ async def amain() -> None:
         "-se",
         "--session",
         action="store",
-        type=pathlib.Path,
+        type=Path,
         default=default_session_file(),
         dest="session",
         help='path to the session file, default is "{default}"')
@@ -84,7 +88,7 @@ async def amain() -> None:
         "-p",
         "--path",
         action="store",
-        type=pathlib.Path,
+        type=Path,
         default=".",
         help="path to create the site, default is the current directory")
 
@@ -118,13 +122,13 @@ async def amain() -> None:
         "-t",
         "--html-template",
         action="store",
-        type=pathlib.Path,
+        type=Path,
         default=None,
         help="html template file, overrides the config")
     build.add_argument(
         "--rss-template",
         action="store",
-        type=pathlib.Path,
+        type=Path,
         default=None,
         help="rss template file, overrides the config")
     build.add_argument(
@@ -134,8 +138,7 @@ async def amain() -> None:
     p.add_argument(
         "--verbose",
         "-v",
-        type=bool,
-        action=argparse.BooleanOptionalAction,
+        action="store_true",
         help="logging level",
     )
 
@@ -177,7 +180,7 @@ async def amain() -> None:
 
     from .config import get_config
 
-    config_path: pathlib.Path = args.config
+    config_path: Path = args.config
     if not config_path.is_absolute() and not config_path.is_file():
         config_path = args.path / config_path
     config = get_config(config_path)
@@ -228,7 +231,7 @@ async def amain() -> None:
             if not tmpl_name:
                 continue
             for base_dir_generator in [lambda: args.path, site_template_dir]:
-                template: pathlib.Path = base_dir_generator() / tmpl_name
+                template: Path = base_dir_generator() / tmpl_name
                 if template.is_file():
                     tmpl_func(template)
                     break

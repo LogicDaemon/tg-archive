@@ -472,8 +472,8 @@ class Sync(aobject):
             pass
 
         try:
-            entity = await self.client.get_entity(group)
-
+            entity = await self.client.get_entity(
+                await self.client.get_input_entity(group))
         except ValueError:
             log.critical(
                 "the group: %s does not exist,"
